@@ -1,0 +1,228 @@
+# Hybrid Cloud Dashboard 설정 파일 예시
+# 이 파일을 복사하여 config.yaml로 저장하고 수정하세요.
+
+# 서버 설정
+server:
+  host: 0.0.0.0
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+
+# AI 설정
+ai:
+  # LLM Provider: openai, claude, azure-openai
+  provider: openai
+
+  # API Key (환경변수 사용 권장: ${OPENAI_API_KEY})
+  api_key: your-api-key-here
+
+  # 모델
+  # OpenAI: gpt-4-turbo-preview, gpt-4, gpt-3.5-turbo
+  # Claude: claude-3-opus-20240229, claude-3-sonnet-20240229
+  model: gpt-4-turbo-preview
+
+  # Temperature (0.0 ~ 1.0, 낮을수록 일관된 출력)
+  temperature: 0.3
+
+  # 최대 토큰 수
+  max_tokens: 2000
+
+  # Few-shot Learning 설정
+  few_shot:
+    enabled: true
+    max_examples: 5
+    similarity_threshold: 0.7
+
+  # 응답 캐싱 (동일한 요청 반복 시)
+  cache:
+    enabled: true
+    ttl: 1h
+
+# Docker 설정
+docker:
+  # 로컬 Docker
+  local:
+    socket: unix:///var/run/docker.sock
+    # Windows: npipe:////./pipe/docker_engine
+    # TCP: tcp://localhost:2375
+
+  # 원격 Docker (선택사항)
+  # remote:
+  #   - name: remote-docker-1
+  #     host: tcp://192.168.1.100:2375
+  #     tls: false
+
+# Kubernetes 클러스터 설정
+clusters:
+  # 예시 1: Docker Desktop 로컬 K8s
+  - name: local-k8s
+    type: kubernetes
+    kubeconfig: ~/.kube/config
+    context: docker-desktop
+    # registry: localhost:5000
+
+  # 예시 2: AWS EKS
+  # - name: aws-eks-seoul
+  #   type: kubernetes
+  #   kubeconfig: ~/.kube/config
+  #   context: arn:aws:eks:ap-northeast-2:123456789012:cluster/my-cluster
+  #   registry: 123456789.dkr.ecr.ap-northeast-2.amazonaws.com
+
+  # 예시 3: Azure AKS
+  # - name: azure-aks-korea
+  #   type: kubernetes
+  #   kubeconfig: ~/.kube/config
+  #   context: azure-aks
+  #   registry: myregistry.azurecr.io
+
+  # 예시 4: GCP GKE
+  # - name: gcp-gke
+  #   type: kubernetes
+  #   kubeconfig: ~/.kube/config
+  #   context: gke_project-id_region_cluster-name
+  #   registry: gcr.io/project-id
+
+  # 예시 5: On-premise
+  # - name: onprem-k8s
+  #   type: kubernetes
+  #   kubeconfig: /path/to/kubeconfig
+  #   context: kubernetes-admin@cluster.local
+  #   registry: harbor.company.com
+
+# Container Registry 설정
+registry:
+  # 기본 Registry
+  default:
+    url: docker.io
+    username: your-username
+    password: your-password
+
+  # AWS ECR (자동 로그인 지원)
+  # ecr:
+  #   region: ap-northeast-2
+  #   account_id: 123456789012
+
+  # Azure ACR
+  # acr:
+  #   registry_name: myregistry
+  #   username: your-username
+  #   password: your-password
+
+  # GCP GCR (gcloud 인증 사용)
+  # gcr:
+  #   project_id: my-project
+
+# 배포 이력 데이터베이스
+database:
+  type: sqlite
+  path: ./data/deployments.db
+
+  # PostgreSQL (향후 마이그레이션용)
+  # type: postgres
+  # host: localhost
+  # port: 5432
+  # database: hybrid_dashboard
+  # username: postgres
+  # password: password
+
+# 로깅 설정
+logging:
+  level: info  # debug, info, warn, error
+  format: json  # json, text
+  output: stdout  # stdout, file
+  # file: ./logs/app.log
+
+# 메트릭 수집 설정
+metrics:
+  # 수집 간격 (초)
+  interval: 2
+
+  # WebSocket 브로드캐스트 간격 (초)
+  broadcast_interval: 2
+
+  # 메트릭 보관 기간 (메모리)
+  retention: 5m
+
+# WebSocket 설정
+websocket:
+  # 최대 연결 수
+  max_connections: 1000
+
+  # 메시지 버퍼 크기
+  buffer_size: 256
+
+  # Read timeout
+  read_timeout: 60s
+
+  # Write timeout
+  write_timeout: 10s
+
+  # Ping 간격 (연결 유지)
+  ping_interval: 30s
+
+# 보안 설정
+security:
+  # CORS 설정
+  cors:
+    enabled: true
+    allowed_origins:
+      - http://localhost:3000
+      - http://localhost:5173
+    allowed_methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+    allowed_headers:
+      - "*"
+
+  # API 인증 (향후 구현)
+  # auth:
+  #   enabled: false
+  #   type: api_key  # api_key, jwt
+  #   api_keys:
+  #     - key: your-api-key
+  #       name: admin
+
+# 기능 플래그
+features:
+  # AI 기반 Manifest 생성
+  ai_manifest_generation: true
+
+  # 자동 배포 (승인 없이)
+  auto_deploy: false
+
+  # 메트릭 수집
+  metrics_collection: true
+
+  # 로그 스트리밍
+  log_streaming: true
+
+  # 배포 이력 저장
+  deployment_history: true
+
+# 제한 설정
+limits:
+  # 동시 배포 수
+  max_concurrent_deploys: 5
+
+  # 배포 타임아웃 (분)
+  deploy_timeout: 30
+
+  # 최대 로그 라인 수
+  max_log_lines: 10000
+
+# 알림 설정 (향후 구현)
+# notifications:
+#   slack:
+#     enabled: false
+#     webhook_url: https://hooks.slack.com/services/xxx
+#     channel: "#deployments"
+#
+#   email:
+#     enabled: false
+#     smtp_host: smtp.gmail.com
+#     smtp_port: 587
+#     from: noreply@company.com
+#     to:
+#       - ops@company.com

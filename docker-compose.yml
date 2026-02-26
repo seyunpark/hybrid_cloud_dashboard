@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # 백엔드 (Go)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hybrid-dashboard-backend
+    ports:
+      - "8080:8080"
+    volumes:
+      # Docker 소켓 마운트 (로컬 Docker 컨테이너 접근)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 설정 파일
+      - ./configs:/app/configs:ro
+      # kubeconfig (Kubernetes 클러스터 접근)
+      - ~/.kube:/root/.kube:ro
+      # 데이터베이스
+      - ./data:/app/data
+    environment:
+      - CONFIG_PATH=/app/configs/config.yaml
+      - ENV=production
+      - PORT=8080
+      # OpenAI API Key (환경변수에서 주입)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: unless-stopped
+    networks:
+      - dashboard-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 프론트엔드 (React)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:8080
+        - VITE_WS_URL=ws://localhost:8080
+    container_name: hybrid-dashboard-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - dashboard-network
+
+networks:
+  dashboard-network:
+    driver: bridge
+
+volumes:
+  data:
+    driver: local
