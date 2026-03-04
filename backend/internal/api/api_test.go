@@ -91,6 +91,12 @@ func (m *mockK8sService) AddCluster(ctx context.Context, cfg config.ClusterConfi
 func (m *mockK8sService) RemoveCluster(name string) error {
 	return m.err
 }
+func (m *mockK8sService) ApplyManifest(ctx context.Context, cluster string, yamlContent string) error {
+	return m.err
+}
+func (m *mockK8sService) DeleteResource(ctx context.Context, cluster, kind, namespace, name string) error {
+	return m.err
+}
 
 type mockAIService struct {
 	result *models.ManifestResult
@@ -190,6 +196,12 @@ func (m *mockDataStore) ListStackDeploys(ctx context.Context, limit int) ([]mode
 }
 func (m *mockDataStore) DeleteStackDeploy(ctx context.Context, deployID string) error {
 	return m.err
+}
+func (m *mockDataStore) ListUnifiedHistory(ctx context.Context, offset, limit int) ([]models.UnifiedDeployItem, int, error) {
+	return []models.UnifiedDeployItem{}, 0, m.err
+}
+func (m *mockDataStore) CleanupOldRecords(ctx context.Context, retentionDays int) (int64, error) {
+	return 0, m.err
 }
 
 type mockRegistryService struct {

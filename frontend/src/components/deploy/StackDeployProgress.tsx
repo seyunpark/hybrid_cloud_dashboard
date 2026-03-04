@@ -89,7 +89,9 @@ export function StackDeployProgress({ status }: StackDeployProgressProps) {
                   <div key={i} className="flex items-center gap-2 text-xs">
                     <StepIcon status={step.status} />
                     <span className={step.status === 'in_progress' ? 'font-medium text-blue-700' : 'text-gray-600'}>
-                      {step.step.replace(/^create_/, 'Create ').replace(/^\w/, (c) => c.toUpperCase())}
+                      {step.step.startsWith('apply:')
+                        ? `Apply ${step.step.slice(6)}`
+                        : step.step.replace(/^create_/, 'Create ').replace(/^\w/, (c) => c.toUpperCase())}
                     </span>
                     {step.message && (
                       <span className="text-gray-400">- {step.message}</span>

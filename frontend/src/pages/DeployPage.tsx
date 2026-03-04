@@ -1,32 +1,92 @@
 import { useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useNavigate, Link } from 'react-router-dom';
-import { deployApi, stackDeployApi } from '@/api/client';
+import { stackDeployApi } from '@/api/client';
 import { StatusBadge } from '@/components/common/StatusBadge';
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
-import { formatDateTime } from '@/utils/formatters';
+import { formatRelativeTime } from '@/utils/formatters';
 import { StackDeployModal } from '@/components/deploy/StackDeployModal';
 import { useDockerContainers } from '@/hooks/useDockerContainers';
 import { useK8sClusters } from '@/hooks/useK8sClusters';
 import { useActiveStackDeploys } from '@/hooks/useStackDeploy';
+import { useUnifiedHistory } from '@/hooks/useUnifiedHistory';
+import type { UnifiedDeployItem } from '@/api/types';
+
+function RecentDeployRow({ item }: { item: UnifiedDeployItem }) {
+  const isStack = item.type === 'stack';
+
+  const content = (
+    <div className="flex items-center justify-between py-2.5">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <span
+          className={`flex-shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${
+            isStack
+              ? 'bg-purple-100 text-purple-700'
+              : 'bg-gray-100 text-gray-600'
+          }`}
+        >
+          {isStack ? 'Stack' : 'Single'}
+        </span>
+        <span className="truncate text-sm font-medium text-gray-900">
+          {item.name}
+        </span>
+        {isStack && item.stack_detail && (
+          <span className="hidden text-xs text-gray-400 sm:inline">
+            ({item.stack_detail.service_count} services)
+          </span>
+        )}
+        {!isStack && (
+          <span className="hidden text-xs text-gray-400 sm:inline">
+            {item.image_summary}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-shrink-0 items-center gap-2.5">
+        <StatusBadge status={item.status} />
+        <span className="text-xs text-gray-400">
+          {formatRelativeTime(item.deployed_at)}
+        </span>
+      </div>
+    </div>
+  );
+
+  if (isStack) {
+    return (
+      <Link
+        to={`/deploy/${item.id}`}
+        className="block border-b border-gray-100 last:border-b-0 hover:bg-gray-50 px-3 transition"
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <div className="border-b border-gray-100 last:border-b-0 px-3">
+      {content}
+    </div>
+  );
+}
 
 export function DeployPage() {
   const navigate = useNavigate();
-  const { data: historyData, isLoading: historyLoading } = useQuery({
-    queryKey: ['deploy', 'history'],
-    queryFn: () => deployApi.getDeployHistory(),
-  });
   const { data: containers } = useDockerContainers();
   const { data: clusters } = useK8sClusters();
   const { data: activeData } = useActiveStackDeploys();
+  const { data: recentData, isLoading: recentLoading } = useUnifiedHistory(1, 5);
 
-  // Modal state only
+  // Modal state
   const [showModal, setShowModal] = useState(false);
   const [stackLoading, setStackLoading] = useState(false);
   const [stackError, setStackError] = useState<string | null>(null);
 
   const handleStackDeploy = useCallback(
-    async (containerIds: string[], stackName: string, clusterName: string, namespace: string, createNamespace: boolean) => {
+    async (
+      containerIds: string[],
+      stackName: string,
+      clusterName: string,
+      namespace: string,
+      createNamespace: boolean,
+    ) => {
       setStackLoading(true);
       setStackError(null);
       try {
@@ -41,7 +101,10 @@ export function DeployPage() {
         setShowModal(false);
         navigate(`/deploy/${resp.deploy_id}`);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : 'Failed to generate stack manifests';
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Failed to generate stack manifests';
         setStackError(msg);
       } finally {
         setStackLoading(false);
@@ -57,6 +120,8 @@ export function DeployPage() {
   }, []);
 
   const activeDeploys = activeData?.deployments ?? [];
+  const recentItems = recentData?.items ?? [];
+  const totalCount = recentData?.total ?? 0;
 
   return (
     <div className="space-y-6">
@@ -82,11 +147,11 @@ export function DeployPage() {
         error={stackError}
       />
 
-      {/* Active Deployments */}
+      {/* Stack Deploys */}
       {activeDeploys.length > 0 && (
         <div>
           <h3 className="mb-3 text-sm font-semibold text-gray-700">
-            Active Deployments ({activeDeploys.length})
+            Stack Deploys ({activeDeploys.length})
           </h3>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {activeDeploys.map((deploy) => {
@@ -113,14 +178,16 @@ export function DeployPage() {
                     <StatusBadge status={deploy.status} />
                   </div>
                   <div className="mb-2 flex flex-wrap gap-1">
-                    {deploy.deploy_order.map((name) => (
-                      <span
-                        key={name}
-                        className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600"
-                      >
-                        {name}
-                      </span>
-                    ))}
+                    {deploy.deploy_order
+                      .filter((name) => !name.startsWith('_'))
+                      .map((name) => (
+                        <span
+                          key={name}
+                          className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600"
+                        >
+                          {name}
+                        </span>
+                      ))}
                   </div>
                   {deploy.status === 'deploying' && (
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
@@ -137,76 +204,34 @@ export function DeployPage() {
         </div>
       )}
 
-      {/* History Table */}
+      {/* Recent History */}
       <div>
-        <h3 className="mb-3 text-sm font-semibold text-gray-700">
-          History ({historyData?.total ?? 0})
-        </h3>
-        {historyLoading ? (
-          <LoadingSpinner message="Loading deployment history..." />
-        ) : historyData && historyData.deployments.length > 0 ? (
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700">
+            Recent History
+          </h3>
+          {totalCount > 0 && (
+            <Link
+              to="/history"
+              className="text-sm font-medium text-blue-600 hover:text-blue-700"
+            >
+              View all ({totalCount})
+            </Link>
+          )}
+        </div>
+
+        {recentLoading && !recentData ? (
+          <LoadingSpinner message="Loading..." />
+        ) : recentItems.length > 0 ? (
           <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">
-                    Service
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">
-                    Image
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">
-                    Cluster
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">
-                    AI
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500">
-                    Deployed
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {historyData.deployments.map((deploy) => (
-                  <tr key={deploy.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                      {deploy.service_name}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-500">
-                      {deploy.image_name}{deploy.image_tag ? `:${deploy.image_tag}` : ''}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-500">
-                      {deploy.target_cluster}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge
-                        status={deploy.status || (deploy.success ? 'deployed' : 'failed')}
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-500">
-                      {deploy.ai_generated ? (
-                        <span className="text-blue-600">
-                          AI ({Math.round(deploy.ai_confidence * 100)}%)
-                        </span>
-                      ) : (
-                        'Manual'
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-500">
-                      {formatDateTime(deploy.deployed_at)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {recentItems.map((item) => (
+              <RecentDeployRow key={item.id} item={item} />
+            ))}
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-gray-300 p-8 text-center">
             <p className="text-sm text-gray-500">
-              No deployment history yet. Deploy a container to get started.
+              No deployment history yet.
             </p>
           </div>
         )}

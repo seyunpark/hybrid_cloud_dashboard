@@ -128,6 +128,7 @@ func (s *Server) setupRouter() {
 			deployGroup.DELETE("/:deploy_id", s.handleDeleteDeployRecord)
 			deployGroup.GET("/:deploy_id/status", s.handleGetDeployStatus)
 			deployGroup.GET("/history", s.handleGetDeployHistory)
+			deployGroup.GET("/unified-history", s.handleGetUnifiedHistory)
 
 			// Stack Deploy
 			deployGroup.GET("/stack", s.handleListActiveStackDeploys)

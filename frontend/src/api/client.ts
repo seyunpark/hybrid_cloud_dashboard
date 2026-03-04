@@ -18,6 +18,8 @@ import type {
   StackDeployRequest,
   StackDeployResponse,
   StackDeployStatus,
+  UnifiedDeployItem,
+  PaginatedResponse,
 } from './types';
 
 const apiClient = axios.create({
@@ -213,6 +215,14 @@ export const deployApi = {
   deleteDeployRecord: async (deployId: string) => {
     const { data } = await apiClient.delete<SuccessResponse>(
       `/api/deploy/${deployId}`,
+    );
+    return data;
+  },
+
+  getUnifiedHistory: async (page = 1, limit = 20) => {
+    const { data } = await apiClient.get<PaginatedResponse<UnifiedDeployItem>>(
+      '/api/deploy/unified-history',
+      { params: { page, limit } },
     );
     return data;
   },

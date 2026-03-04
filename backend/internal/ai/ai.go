@@ -915,10 +915,11 @@ func (s *aiService) GenerateStackManifest(ctx context.Context, info StackContain
 		return fb, nil
 	}
 
-	// Stack manifests are much larger — temporarily increase token limit (local copy to avoid race).
+	// Stack manifests are much larger — temporarily increase token limit.
+	// Multiple services with Deployment+Service+ConfigMap+Secret YAML requires a large budget.
 	origMaxTokens := s.maxTokens
-	if s.maxTokens < 8192 {
-		s.maxTokens = 8192
+	if s.maxTokens < 16384 {
+		s.maxTokens = 16384
 	}
 	defer func() { s.maxTokens = origMaxTokens }()
 
@@ -950,8 +951,8 @@ func (s *aiService) RefineStackManifest(ctx context.Context, current *StackManif
 	}
 
 	origMaxTokens := s.maxTokens
-	if s.maxTokens < 8192 {
-		s.maxTokens = 8192
+	if s.maxTokens < 16384 {
+		s.maxTokens = 16384
 	}
 	defer func() { s.maxTokens = origMaxTokens }()
 
@@ -1001,9 +1002,11 @@ manifests 규칙:
 - 필요 시 HPA, Ingress, PersistentVolumeClaim 등 추가 가능
 
 핵심 요구사항:
-- 컨테이너의 환경변수(DB_HOST, REDIS_URL, API_URL 등), 포트, 이미지 이름을 분석하여 서비스 간 연결을 자동 감지
+- 반드시 제공된 컨테이너에 대해서만 K8s 리소스를 생성. 제공되지 않은 서비스(예: DB, Redis 등)는 절대 Deployment/Service를 생성하지 마세요
+- 환경변수에 외부 서비스(DB, Redis 등) 연결 정보가 있어도, 해당 서비스가 제공된 컨테이너 목록에 없으면 connections에만 기록하고 리소스는 생성하지 마세요
+- 컨테이너의 환경변수(DB_HOST, REDIS_URL, API_URL 등), 포트, 이미지 이름을 분석하여 제공된 서비스 간 연결을 자동 감지
 - 연결된 서비스 간에는 K8s DNS 사용: <service-name>.<namespace>.svc.cluster.local
-- deploy_order는 의존성 기반 (DB 먼저, 백엔드, 프론트엔드 순서)
+- deploy_order에는 제공된 컨테이너에 대응하는 서비스만 포함 (의존성 순서 기반)
 - 각 Deployment에 resource requests/limits, liveness/readiness probe, SecurityContext 포함
 - Deployment에서 환경변수는 ConfigMap/Secret을 envFrom 또는 valueFrom으로 참조
 - DB 서비스는 ClusterIP, 프론트엔드는 LoadBalancer, 백엔드는 ClusterIP

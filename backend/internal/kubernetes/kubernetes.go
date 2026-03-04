@@ -9,8 +9,15 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/dynamic"
 	k8s "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/seyunpark/hybrid_cloud_dashboard/internal/config"
@@ -29,6 +36,10 @@ type Service interface {
 	DeleteDeployment(ctx context.Context, cluster, namespace, name string) error
 	DeleteService(ctx context.Context, cluster, namespace, name string) error
 
+	// Generic resource operations (dynamic client)
+	ApplyManifest(ctx context.Context, cluster string, yamlContent string) error
+	DeleteResource(ctx context.Context, cluster, kind, namespace, name string) error
+
 	// Cluster management
 	ListKubeContexts(kubeconfigPath string) ([]models.KubeContext, error)
 	AddCluster(ctx context.Context, cfg config.ClusterConfig) error
@@ -36,8 +47,10 @@ type Service interface {
 }
 
 type clusterClient struct {
-	config config.ClusterConfig
-	client k8s.Interface
+	config    config.ClusterConfig
+	client    k8s.Interface
+	dynClient dynamic.Interface
+	mapper    meta.RESTMapper
 }
 
 type k8sService struct {
@@ -52,20 +65,20 @@ func NewService(clusters []config.ClusterConfig) (Service, error) {
 	}
 
 	for _, cc := range clusters {
-		client, err := buildClient(cc)
+		cl, err := buildClusterClient(cc)
 		if err != nil {
 			slog.Warn("failed to create k8s client, marking as disconnected",
 				"cluster", cc.Name, "error", err)
-			svc.clusters[cc.Name] = &clusterClient{config: cc, client: nil}
+			svc.clusters[cc.Name] = &clusterClient{config: cc}
 			continue
 		}
-		svc.clusters[cc.Name] = &clusterClient{config: cc, client: client}
+		svc.clusters[cc.Name] = cl
 	}
 
 	return svc, nil
 }
 
-func buildClient(cc config.ClusterConfig) (k8s.Interface, error) {
+func buildClusterClient(cc config.ClusterConfig) (*clusterClient, error) {
 	kubeconfigPath := cc.Kubeconfig
 	if strings.HasPrefix(kubeconfigPath, "~") {
 		home, _ := os.UserHomeDir()
@@ -82,7 +95,6 @@ func buildClient(cc config.ClusterConfig) (k8s.Interface, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building config: %w", err)
 	}
-
 	restCfg.Timeout = 10 * time.Second
 
 	clientset, err := k8s.NewForConfig(restCfg)
@@ -90,7 +102,24 @@ func buildClient(cc config.ClusterConfig) (k8s.Interface, error) {
 		return nil, fmt.Errorf("creating clientset: %w", err)
 	}
 
-	return clientset, nil
+	dynClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	groupResources, err := restmapper.GetAPIGroupResources(clientset.Discovery())
+	if err != nil {
+		slog.Warn("failed to discover API resources, dynamic operations may fail", "cluster", cc.Name, "error", err)
+		return &clusterClient{config: cc, client: clientset, dynClient: dynClient}, nil
+	}
+	mapper := restmapper.NewDiscoveryRESTMapper(groupResources)
+
+	return &clusterClient{
+		config:    cc,
+		client:    clientset,
+		dynClient: dynClient,
+		mapper:    mapper,
+	}, nil
 }
 
 func (s *k8sService) getClient(cluster string) (*clusterClient, error) {
@@ -424,15 +453,15 @@ func (s *k8sService) AddCluster(ctx context.Context, cfg config.ClusterConfig) e
 		return fmt.Errorf("cluster %q already registered", cfg.Name)
 	}
 
-	client, err := buildClient(cfg)
+	cl, err := buildClusterClient(cfg)
 	if err != nil {
 		slog.Warn("failed to create k8s client for new cluster, marking as disconnected",
 			"cluster", cfg.Name, "error", err)
-		s.clusters[cfg.Name] = &clusterClient{config: cfg, client: nil}
+		s.clusters[cfg.Name] = &clusterClient{config: cfg}
 		return nil
 	}
 
-	s.clusters[cfg.Name] = &clusterClient{config: cfg, client: client}
+	s.clusters[cfg.Name] = cl
 	slog.Info("cluster registered", "name", cfg.Name, "context", cfg.Context)
 	return nil
 }
@@ -449,4 +478,138 @@ func (s *k8sService) RemoveCluster(name string) error {
 	delete(s.clusters, name)
 	slog.Info("cluster deregistered", "name", name)
 	return nil
+}
+
+// --- Dynamic client operations ---
+
+// knownGVR maps manifest kind strings to their GroupVersionResource for fast lookup.
+var knownGVR = map[string]schema.GroupVersionResource{
+	"Namespace":                {Group: "", Version: "v1", Resource: "namespaces"},
+	"ConfigMap":                {Group: "", Version: "v1", Resource: "configmaps"},
+	"Secret":                   {Group: "", Version: "v1", Resource: "secrets"},
+	"Service":                  {Group: "", Version: "v1", Resource: "services"},
+	"PersistentVolumeClaim":    {Group: "", Version: "v1", Resource: "persistentvolumeclaims"},
+	"Deployment":               {Group: "apps", Version: "v1", Resource: "deployments"},
+	"StatefulSet":              {Group: "apps", Version: "v1", Resource: "statefulsets"},
+	"HorizontalPodAutoscaler": {Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"},
+	"Ingress":                  {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
+}
+
+// ApplyManifest applies a raw YAML manifest to the specified cluster using Server-Side Apply.
+func (s *k8sService) ApplyManifest(ctx context.Context, cluster string, yamlContent string) error {
+	cc, err := s.getClient(cluster)
+	if err != nil {
+		return err
+	}
+	if cc.dynClient == nil {
+		return fmt.Errorf("cluster %q has no dynamic client", cluster)
+	}
+
+	// Decode YAML to unstructured object
+	obj := &unstructured.Unstructured{}
+	dec := yamlutil.NewYAMLOrJSONDecoder(strings.NewReader(yamlContent), 4096)
+	if err := dec.Decode(obj); err != nil {
+		return fmt.Errorf("decoding YAML: %w", err)
+	}
+
+	gvk := obj.GroupVersionKind()
+	if gvk.Kind == "" {
+		return fmt.Errorf("manifest has no kind")
+	}
+
+	// Resolve GVR
+	gvr, namespaced, err := s.resolveGVR(cc, gvk)
+	if err != nil {
+		return err
+	}
+
+	// Build resource interface
+	var dr dynamic.ResourceInterface
+	if namespaced {
+		ns := obj.GetNamespace()
+		if ns == "" {
+			ns = "default"
+		}
+		dr = cc.dynClient.Resource(gvr).Namespace(ns)
+	} else {
+		dr = cc.dynClient.Resource(gvr)
+	}
+
+	// Server-Side Apply (idempotent — works for both create and update)
+	obj.SetManagedFields(nil)
+	_, err = dr.Apply(ctx, obj.GetName(), obj, metav1.ApplyOptions{
+		FieldManager: "hybrid-cloud-dashboard",
+		Force:        true,
+	})
+	if err != nil {
+		return fmt.Errorf("applying %s %q: %w", gvk.Kind, obj.GetName(), err)
+	}
+
+	return nil
+}
+
+// DeleteResource deletes any K8s resource by kind, namespace, and name.
+func (s *k8sService) DeleteResource(ctx context.Context, cluster, kind, namespace, name string) error {
+	cc, err := s.getClient(cluster)
+	if err != nil {
+		return err
+	}
+	if cc.dynClient == nil {
+		return fmt.Errorf("cluster %q has no dynamic client", cluster)
+	}
+
+	gvr, ok := knownGVR[kind]
+	if !ok {
+		// Also handle the "HPA" alias used in manifest maps
+		if kind == "HPA" {
+			gvr = knownGVR["HorizontalPodAutoscaler"]
+		} else if cc.mapper != nil {
+			gvk := schema.GroupKind{Kind: kind}
+			mappings, mapErr := cc.mapper.RESTMappings(gvk)
+			if mapErr != nil || len(mappings) == 0 {
+				return fmt.Errorf("no mapping found for kind %q: %v", kind, mapErr)
+			}
+			gvr = mappings[0].Resource
+		} else {
+			return fmt.Errorf("unknown kind %q and no REST mapper available", kind)
+		}
+	}
+
+	var dr dynamic.ResourceInterface
+	if namespace != "" {
+		dr = cc.dynClient.Resource(gvr).Namespace(namespace)
+	} else {
+		dr = cc.dynClient.Resource(gvr)
+	}
+
+	err = dr.Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil // already gone
+		}
+		return fmt.Errorf("deleting %s %q: %w", kind, name, err)
+	}
+	return nil
+}
+
+// resolveGVR resolves a GVK to a GVR and determines if the resource is namespaced.
+func (s *k8sService) resolveGVR(cc *clusterClient, gvk schema.GroupVersionKind) (schema.GroupVersionResource, bool, error) {
+	// Fast path: known kinds
+	if gvr, ok := knownGVR[gvk.Kind]; ok {
+		namespaced := gvk.Kind != "Namespace" // Namespace is cluster-scoped
+		return gvr, namespaced, nil
+	}
+
+	// Slow path: REST mapper
+	if cc.mapper == nil {
+		return schema.GroupVersionResource{}, false, fmt.Errorf("no REST mapper for kind %q", gvk.Kind)
+	}
+
+	mapping, err := cc.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		return schema.GroupVersionResource{}, false, fmt.Errorf("finding mapping for %v: %w", gvk, err)
+	}
+
+	namespaced := mapping.Scope.Name() == meta.RESTScopeNameNamespace
+	return mapping.Resource, namespaced, nil
 }

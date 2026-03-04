@@ -259,6 +259,43 @@ export interface DeploymentHistory {
   ai_confidence: number;
 }
 
+// --- Unified Deploy History ---
+
+export interface StackDeployBrief {
+  service_count: number;
+  services: string[];
+  deploy_order: string[];
+}
+
+export interface SingleDeployBrief {
+  image_name: string;
+  image_tag: string;
+  replicas: number;
+}
+
+export interface UnifiedDeployItem {
+  id: string;
+  type: 'single' | 'stack';
+  name: string;
+  image_summary: string;
+  cluster: string;
+  namespace: string;
+  status: string;
+  ai_generated: boolean;
+  confidence: number;
+  deployed_at: string;
+  stack_detail?: StackDeployBrief;
+  single_detail?: SingleDeployBrief;
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+}
+
 // --- Stack Deploy Models ---
 
 export interface StackDeployRequest {

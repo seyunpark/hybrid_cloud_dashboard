@@ -387,41 +387,8 @@ func (s *Server) generateStackManifestAsync(deployID string, req models.StackDep
 	state.Response.Confidence = manifest.Confidence
 
 	// Inject Namespace manifest if createNamespace was requested at modal time
-	if req.CreateNamespace && req.Namespace != "" && req.Namespace != "default" {
-		nsYAML := fmt.Sprintf(`apiVersion: v1
-kind: Namespace
-metadata:
-  name: %s
-  labels:
-    app.kubernetes.io/managed-by: hybrid-cloud-dashboard
-    stack: %s`, req.Namespace, req.StackName)
-
-		if manifest.Manifests == nil {
-			manifest.Manifests = make(map[string]map[string]string)
-		}
-		if manifest.Manifests["Namespace"] == nil {
-			manifest.Manifests["Namespace"] = make(map[string]string)
-		}
-		manifest.Manifests["Namespace"][req.Namespace] = nsYAML
-
-		// Prepend _namespace to deploy order
-		hasNs := false
-		for _, n := range manifest.Topology.DeployOrder {
-			if n == "_namespace" {
-				hasNs = true
-				break
-			}
-		}
-		if !hasNs {
-			manifest.Topology.DeployOrder = append([]string{"_namespace"}, manifest.Topology.DeployOrder...)
-			manifest.Topology.Services = append([]models.StackServiceInfo{{
-				ContainerID: "",
-				ServiceName: "_namespace",
-				ServiceType: "namespace",
-				Image:       "",
-			}}, manifest.Topology.Services...)
-		}
-
+	if req.CreateNamespace {
+		injectNamespaceManifest(manifest, req.Namespace, req.StackName)
 		state.Response.Topology = &manifest.Topology
 		state.Response.Manifests = models.StackManifests(manifest.Manifests)
 	}
@@ -501,6 +468,11 @@ func (s *Server) handleRefineStackDeploy(c *gin.Context) {
 			Error: models.ErrorDetail{Code: "AI_ERROR", Message: errMsg},
 		})
 		return
+	}
+
+	// Re-inject Namespace manifest if original request had CreateNamespace
+	if state.Request != nil && state.Request.CreateNamespace {
+		injectNamespaceManifest(refined, state.Request.Namespace, state.Status.StackName)
 	}
 
 	s.mu.Lock()
@@ -752,42 +724,13 @@ func (s *Server) handleExecuteStackDeploy(c *gin.Context) {
 	// Initialize steps for each service based on actual manifest resource kinds
 	s.mu.Lock()
 	state.Status.Status = "deploying"
+	var manifestMap map[string]map[string]string
+	if state.Manifests != nil {
+		manifestMap = state.Manifests.Manifests
+	}
 	for _, svcName := range state.Status.DeployOrder {
 		if svc, ok := state.Status.Services[svcName]; ok {
-			steps := []models.DeployStep{}
-
-			// Special handling for _namespace
-			if svcName == "_namespace" {
-				steps = []models.DeployStep{
-					{Step: "create_namespace", Status: "pending"},
-				}
-				svc.Steps = steps
-				continue
-			}
-
-			if state.Manifests != nil {
-				for kind, resources := range state.Manifests.Manifests {
-					if kind == "Namespace" {
-						continue // Namespace is handled by _namespace step
-					}
-					for resName := range resources {
-						if resName == svcName || strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
-							steps = append(steps, models.DeployStep{
-								Step:   fmt.Sprintf("create_%s", strings.ToLower(kind)),
-								Status: "pending",
-							})
-							break
-						}
-					}
-				}
-			}
-			if len(steps) == 0 {
-				steps = []models.DeployStep{
-					{Step: "create_deployment", Status: "pending"},
-					{Step: "create_service", Status: "pending"},
-				}
-			}
-			svc.Steps = steps
+			svc.Steps = buildServiceSteps(svcName, manifestMap)
 		}
 	}
 	s.mu.Unlock()
@@ -819,6 +762,9 @@ func (s *Server) handleListActiveStackDeploys(c *gin.Context) {
 		for _, rec := range dbRecords {
 			if inMemoryIDs[rec.DeployID] {
 				continue // in-memory version is more up-to-date
+			}
+			if rec.Status == "deleted" {
+				continue // soft-deleted, skip from active list
 			}
 			status := &models.StackDeployStatus{
 				DeployID:    rec.DeployID,
@@ -928,9 +874,16 @@ func (s *Server) handleDeleteStackDeploy(c *gin.Context) {
 		}
 	}
 
-	// Delete from DB
-	if err := s.data.DeleteStackDeploy(c.Request.Context(), deployID); err != nil {
-		slog.Error("failed to delete stack deploy from DB", "deploy_id", deployID, "error", err)
+	// Soft-delete: mark as "deleted" instead of removing from DB (preserves history)
+	record, err := s.data.GetStackDeploy(c.Request.Context(), deployID)
+	if err == nil && record != nil {
+		record.Status = "deleted"
+		if err := s.data.UpdateStackDeploy(c.Request.Context(), record); err != nil {
+			slog.Error("failed to soft-delete stack deploy", "deploy_id", deployID, "error", err)
+		}
+	} else {
+		// Not in DB — nothing to do (was only in memory)
+		slog.Info("stack deploy not found in DB, skipping soft-delete", "deploy_id", deployID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "stack deployment record removed"})
@@ -1025,31 +978,78 @@ func (s *Server) handleUndeployStack(c *gin.Context) {
 		return
 	}
 
-	// Delete K8s resources for each service (best-effort, reverse order)
+	// Delete K8s resources for each service (best-effort, reverse deploy order).
+	// Within each service, delete in reverse dependency order:
+	// autoscaling/routing → networking → workloads → config/storage
+	// Known kinds are deleted first in safe order, then any unknown kinds from manifests.
+	deleteKindOrder := []string{
+		"HorizontalPodAutoscaler", "HPA",
+		"Ingress",
+		"HTTPRoute", "Gateway",
+		"Service",
+		"Deployment", "StatefulSet",
+		"Secret", "ConfigMap",
+		"PersistentVolumeClaim",
+	}
 	for i := len(deployOrder) - 1; i >= 0; i-- {
 		svcName := deployOrder[i]
+		if svcName == "_namespace" {
+			continue // Namespace handled separately below
+		}
 		slog.Info("undeploying stack service", "deploy_id", deployID, "service", svcName)
 
-		// Delete Deployment resource
-		if err := s.kubernetes.DeleteDeployment(ctx, clusterName, namespace, svcName); err != nil {
-			slog.Warn("failed to delete deployment", "service", svcName, "error", err)
-		}
-		// Delete Service resource
-		if err := s.kubernetes.DeleteService(ctx, clusterName, namespace, svcName); err != nil {
-			slog.Warn("failed to delete service", "service", svcName, "error", err)
-		}
-
-		// Delete other resource kinds (ConfigMap, Secret, HPA, etc.) if manifests available
 		if manifests != nil {
+			// Track which kinds have been processed
+			deletedKinds := map[string]bool{}
+
+			// Phase 1: Delete known kinds in safe order
+			for _, kind := range deleteKindOrder {
+				resources, ok := manifests[kind]
+				if !ok {
+					continue
+				}
+				deletedKinds[kind] = true
+				for resName := range resources {
+					if resName == svcName || strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
+						if err := s.kubernetes.DeleteResource(ctx, clusterName, kind, namespace, resName); err != nil {
+							slog.Warn("failed to delete resource", "kind", kind, "name", resName, "error", err)
+						}
+					}
+				}
+			}
+
+			// Phase 2: Delete any remaining kinds not in the predefined order
 			for kind, resources := range manifests {
-				if kind == "Deployment" || kind == "Service" {
-					continue // already handled
+				if kind == "Namespace" || deletedKinds[kind] {
+					continue
 				}
 				for resName := range resources {
 					if resName == svcName || strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
-						slog.Info("would delete additional resource", "kind", kind, "name", resName)
-						// Additional resource deletion would go here when K8s service supports it
+						slog.Info("deleting additional resource", "kind", kind, "name", resName)
+						if err := s.kubernetes.DeleteResource(ctx, clusterName, kind, namespace, resName); err != nil {
+							slog.Warn("failed to delete resource", "kind", kind, "name", resName, "error", err)
+						}
 					}
+				}
+			}
+		} else {
+			// Fallback: no manifests stored, try deleting Deployment and Service by service name
+			if err := s.kubernetes.DeleteResource(ctx, clusterName, "Deployment", namespace, svcName); err != nil {
+				slog.Warn("failed to delete deployment", "service", svcName, "error", err)
+			}
+			if err := s.kubernetes.DeleteResource(ctx, clusterName, "Service", namespace, svcName); err != nil {
+				slog.Warn("failed to delete service", "service", svcName, "error", err)
+			}
+		}
+	}
+
+	// Delete Namespace last (if _namespace service was in deploy order)
+	if manifests != nil {
+		if nsResources, ok := manifests["Namespace"]; ok {
+			for resName := range nsResources {
+				slog.Info("deleting namespace resource", "name", resName)
+				if err := s.kubernetes.DeleteResource(ctx, clusterName, "Namespace", "", resName); err != nil {
+					slog.Warn("failed to delete namespace", "name", resName, "error", err)
 				}
 			}
 		}
@@ -1210,25 +1210,7 @@ func (s *Server) handleRedeployStack(c *gin.Context) {
 	// Initialize steps for each service
 	for _, svcName := range record.DeployOrder {
 		if svc, ok := reusedState.Status.Services[svcName]; ok {
-			steps := []models.DeployStep{}
-			for kind, resources := range manifests {
-				for resName := range resources {
-					if resName == svcName || strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
-						steps = append(steps, models.DeployStep{
-							Step:   fmt.Sprintf("create_%s", strings.ToLower(kind)),
-							Status: "pending",
-						})
-						break
-					}
-				}
-			}
-			if len(steps) == 0 {
-				steps = []models.DeployStep{
-					{Step: "create_deployment", Status: "pending"},
-					{Step: "create_service", Status: "pending"},
-				}
-			}
-			svc.Steps = steps
+			svc.Steps = buildServiceSteps(svcName, map[string]map[string]string(manifests))
 		}
 	}
 
@@ -1250,6 +1232,170 @@ func (s *Server) handleRedeployStack(c *gin.Context) {
 	})
 }
 
+// injectNamespaceManifest ensures a Namespace manifest and _namespace deploy order entry
+// exist in the given StackManifestResult when namespace creation was requested.
+func injectNamespaceManifest(result *ai.StackManifestResult, namespace, stackName string) {
+	if namespace == "" || namespace == "default" {
+		return
+	}
+
+	nsYAML := fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+  labels:
+    app.kubernetes.io/managed-by: hybrid-cloud-dashboard
+    stack: %s`, namespace, stackName)
+
+	if result.Manifests == nil {
+		result.Manifests = make(map[string]map[string]string)
+	}
+	if result.Manifests["Namespace"] == nil {
+		result.Manifests["Namespace"] = make(map[string]string)
+	}
+	result.Manifests["Namespace"][namespace] = nsYAML
+
+	// Ensure _namespace is in deploy order
+	hasNs := false
+	for _, n := range result.Topology.DeployOrder {
+		if n == "_namespace" {
+			hasNs = true
+			break
+		}
+	}
+	if !hasNs {
+		result.Topology.DeployOrder = append([]string{"_namespace"}, result.Topology.DeployOrder...)
+		result.Topology.Services = append([]models.StackServiceInfo{{
+			ContainerID: "",
+			ServiceName: "_namespace",
+			ServiceType: "namespace",
+			Image:       "",
+		}}, result.Topology.Services...)
+	}
+}
+
+// applyKindOrder defines the dependency-safe order for applying K8s resources.
+// ConfigMap/Secret first (referenced by pods), then workloads, then networking, then autoscaling.
+var applyKindOrder = []string{
+	"ConfigMap", "Secret", "PersistentVolumeClaim",
+	"Deployment", "StatefulSet",
+	"Service",
+	"Ingress",
+	"HorizontalPodAutoscaler", "HPA",
+}
+
+// buildServiceSteps generates deploy steps for a service based on its manifest resource kinds.
+// Step names use the format "apply:<Kind>" to preserve the original kind name exactly.
+// Steps are ordered in dependency-safe order to avoid apply failures.
+func buildServiceSteps(svcName string, manifests map[string]map[string]string) []models.DeployStep {
+	// Special handling for _namespace
+	if svcName == "_namespace" {
+		return []models.DeployStep{
+			{Step: "apply:Namespace", Status: "pending"},
+		}
+	}
+
+	// Collect matching kinds for this service
+	matchedKinds := map[string]bool{}
+	if manifests != nil {
+		for kind, resources := range manifests {
+			if kind == "Namespace" {
+				continue // Namespace is handled by _namespace step
+			}
+			for resName := range resources {
+				if resName == svcName || strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
+					matchedKinds[kind] = true
+					break
+				}
+			}
+		}
+	}
+
+	// Build steps in dependency-safe order
+	steps := []models.DeployStep{}
+	added := map[string]bool{}
+	// Known kinds first, in order
+	for _, kind := range applyKindOrder {
+		if matchedKinds[kind] && !added[kind] {
+			steps = append(steps, models.DeployStep{
+				Step:   fmt.Sprintf("apply:%s", kind),
+				Status: "pending",
+			})
+			added[kind] = true
+		}
+	}
+	// Any remaining kinds not in the predefined order
+	for kind := range matchedKinds {
+		if !added[kind] {
+			steps = append(steps, models.DeployStep{
+				Step:   fmt.Sprintf("apply:%s", kind),
+				Status: "pending",
+			})
+		}
+	}
+
+	if len(steps) == 0 {
+		steps = []models.DeployStep{
+			{Step: "apply:Deployment", Status: "pending"},
+			{Step: "apply:Service", Status: "pending"},
+		}
+	}
+	return steps
+}
+
+// stepToKind extracts the K8s kind from a step name.
+// Supports both new format "apply:Deployment" and legacy "create_deployment".
+func stepToKind(stepName string) string {
+	// New format: "apply:Kind" — kind is preserved exactly
+	if strings.HasPrefix(stepName, "apply:") {
+		return strings.TrimPrefix(stepName, "apply:")
+	}
+	// Legacy format: "create_kind"
+	label := strings.TrimPrefix(stepName, "create_")
+	kindMap := map[string]string{
+		"deployment":            "Deployment",
+		"service":               "Service",
+		"configmap":             "ConfigMap",
+		"secret":                "Secret",
+		"hpa":                   "HPA",
+		"ingress":               "Ingress",
+		"persistentvolumeclaim": "PersistentVolumeClaim",
+		"namespace":             "Namespace",
+		"statefulset":           "StatefulSet",
+	}
+	if kind, ok := kindMap[strings.ToLower(label)]; ok {
+		return kind
+	}
+	return label
+}
+
+// findManifestForStep finds the YAML manifest for a given kind and service name.
+func findManifestForStep(manifests map[string]map[string]string, kind, svcName string) string {
+	if manifests == nil {
+		return ""
+	}
+	// Special case: _namespace service matches all Namespace kind resources
+	if svcName == "_namespace" && kind == "Namespace" {
+		for _, yaml := range manifests["Namespace"] {
+			return yaml
+		}
+		return ""
+	}
+	resources, ok := manifests[kind]
+	if !ok {
+		return ""
+	}
+	if yaml, ok := resources[svcName]; ok {
+		return yaml
+	}
+	for resName, yaml := range resources {
+		if strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
+			return yaml
+		}
+	}
+	return ""
+}
+
 func (s *Server) executeStackDeployAsync(deployID string) {
 	s.mu.RLock()
 	state, exists := s.stackDeployStates[deployID]
@@ -1266,7 +1412,7 @@ func (s *Server) executeStackDeployAsync(deployID string) {
 				if step.Step == stepName {
 					svc.Steps[i].Status = status
 					svc.Steps[i].Message = message
-					if status == "completed" || status == "failed" {
+					if status == "completed" || status == "failed" || status == "skipped" {
 						now := time.Now()
 						svc.Steps[i].CompletedAt = &now
 					}
@@ -1294,8 +1440,33 @@ func (s *Server) executeStackDeployAsync(deployID string) {
 
 	ctx := context.Background()
 
-	// Deploy each service in order — execute steps dynamically
+	var clusterName string
+	s.mu.RLock()
+	if state.Request != nil {
+		clusterName = state.Request.ClusterName
+	}
+	var manifests map[string]map[string]string
+	if state.Manifests != nil {
+		manifests = state.Manifests.Manifests
+	}
+	s.mu.RUnlock()
+
+	deployFailed := false
+
 	for _, svcName := range state.Status.DeployOrder {
+		if deployFailed {
+			s.mu.Lock()
+			if svc, ok := state.Status.Services[svcName]; ok {
+				svc.Status = "skipped"
+				for i := range svc.Steps {
+					svc.Steps[i].Status = "skipped"
+					svc.Steps[i].Message = "Skipped due to previous failure"
+				}
+			}
+			s.mu.Unlock()
+			continue
+		}
+
 		slog.Info("deploying stack service", "deploy_id", deployID, "service", svcName)
 
 		s.mu.RLock()
@@ -1304,67 +1475,62 @@ func (s *Server) executeStackDeployAsync(deployID string) {
 		copy(steps, svc.Steps)
 		s.mu.RUnlock()
 
+		serviceFailed := false
 		for _, step := range steps {
-			label := strings.TrimPrefix(step.Step, "create_")
-			updateStep(svcName, step.Step, "in_progress", fmt.Sprintf("Creating %s...", label))
-			time.Sleep(1 * time.Second) // Simulated
-			updateStep(svcName, step.Step, "completed", fmt.Sprintf("%s created", label))
+			if serviceFailed {
+				updateStep(svcName, step.Step, "skipped", "Skipped due to previous failure")
+				continue
+			}
+
+			kind := stepToKind(step.Step)
+			updateStep(svcName, step.Step, "in_progress", fmt.Sprintf("Applying %s...", kind))
+
+			yamlContent := findManifestForStep(manifests, kind, svcName)
+			if yamlContent == "" {
+				updateStep(svcName, step.Step, "failed", fmt.Sprintf("No manifest found for %s", kind))
+				serviceFailed = true
+				continue
+			}
+
+			applyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err := s.kubernetes.ApplyManifest(applyCtx, clusterName, yamlContent)
+			cancel()
+
+			if err != nil {
+				slog.Error("failed to apply manifest",
+					"deploy_id", deployID, "service", svcName,
+					"kind", kind, "error", err)
+				updateStep(svcName, step.Step, "failed", fmt.Sprintf("Failed: %v", err))
+				serviceFailed = true
+				continue
+			}
+
+			updateStep(svcName, step.Step, "completed", fmt.Sprintf("%s applied", kind))
 		}
 
-		// Update services_json in DB after each service completes
+		if serviceFailed {
+			deployFailed = true
+		}
+
+		// Update DB after each service
 		s.updateStackDeployInDB(ctx, state)
 
-		// Skip deployment_history for _namespace (it's not a real service)
-		if svcName == "_namespace" {
-			continue
-		}
-
-		// Extract this service's manifests for storage
-		svcManifest := make(map[string]string)
-		if state.Manifests != nil {
-			for kind, resources := range state.Manifests.Manifests {
-				for resName, yaml := range resources {
-					if resName == svcName || strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
-						svcManifest[kind] = yaml
-					}
-				}
-			}
-		}
-		manifestJSON, _ := json.Marshal(svcManifest)
-
-		var targetCluster, ns string
-		if state.Request != nil {
-			targetCluster = state.Request.ClusterName
-			ns = state.Request.Namespace
-		}
-		history := &models.DeploymentHistory{
-			ID:            fmt.Sprintf("%s_%s", deployID, svcName),
-			ServiceName:   svcName,
-			TargetCluster: targetCluster,
-			Namespace:     ns,
-			DeployedAt:    time.Now(),
-			Success:       true,
-			Status:        "deployed",
-			ManifestJSON:  string(manifestJSON),
-			AIGenerated:   true,
-			AIConfidence:  state.Response.Confidence,
-			Replicas:      1,
-		}
-		if err := s.data.SaveDeployment(ctx, history); err != nil {
-			slog.Error("failed to save stack service deployment history", "service", svcName, "error", err)
-		}
 	}
 
-	// Mark entire stack as deployed
+	// Mark entire stack status
 	s.mu.Lock()
 	now := time.Now()
-	state.Status.Status = "deployed"
+	if deployFailed {
+		state.Status.Status = "failed"
+		state.Response.Status = "failed"
+	} else {
+		state.Status.Status = "deployed"
+		state.Response.Status = "deployed"
+	}
 	state.Status.CompletedAt = &now
-	state.Response.Status = "deployed"
 	s.mu.Unlock()
 
-	// Persist final status to DB
 	s.updateStackDeployInDB(ctx, state)
 
-	slog.Info("stack deployment completed", "deploy_id", deployID)
+	slog.Info("stack deployment finished", "deploy_id", deployID, "status", state.Status.Status)
 }

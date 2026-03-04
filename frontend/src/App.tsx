@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from '@/components/layout/Layout';
 import { Dashboard } from '@/components/dashboard/Dashboard';
 import { DeployPage } from '@/pages/DeployPage';
+import { HistoryPage } from '@/pages/HistoryPage';
 import { ContainerDetailPage } from '@/pages/ContainerDetailPage';
 import { ClusterDetailPage } from '@/pages/ClusterDetailPage';
 import { SettingsPage } from '@/pages/SettingsPage';
@@ -33,6 +34,7 @@ function App() {
                 <Route path="/cluster/:name" element={<ClusterDetailPage />} />
                 <Route path="/deploy" element={<DeployPage />} />
                 <Route path="/deploy/:deployId" element={<StackDeployDetailPage />} />
+                <Route path="/history" element={<HistoryPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Route>
             </Routes>

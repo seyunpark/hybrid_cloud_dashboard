@@ -284,27 +284,76 @@ func (s *Server) executeDeployAsync(deployID string) {
 	}
 	updateStep("push_image", "completed", "Image ready")
 
+	clusterName := state.Request.ClusterName
+	ns := state.Request.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+
 	// Step 2: Create deployment
-	updateStep("create_deployment", "in_progress", "Creating Kubernetes deployment...")
-	time.Sleep(2 * time.Second) // Simulate K8s apply
-	updateStep("create_deployment", "completed", "Deployment created")
+	updateStep("create_deployment", "in_progress", "Applying Kubernetes deployment...")
+	if state.Manifests != nil && state.Manifests.Deployment != "" {
+		applyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := s.kubernetes.ApplyManifest(applyCtx, clusterName, state.Manifests.Deployment)
+		cancel()
+		if err != nil {
+			slog.Error("failed to apply deployment", "deploy_id", deployID, "error", err)
+			updateStep("create_deployment", "failed", fmt.Sprintf("Failed: %v", err))
+			s.mu.Lock()
+			now := time.Now()
+			state.Status.Status = "failed"
+			state.Status.CompletedAt = &now
+			s.mu.Unlock()
+			return
+		}
+	}
+	updateStep("create_deployment", "completed", "Deployment applied")
 
 	// Step 3: Create service
-	updateStep("create_service", "in_progress", "Creating Kubernetes service...")
-	time.Sleep(1 * time.Second) // Simulate K8s apply
-	updateStep("create_service", "completed", "Service created")
+	updateStep("create_service", "in_progress", "Applying Kubernetes service...")
+	if state.Manifests != nil && state.Manifests.Service != "" {
+		applyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := s.kubernetes.ApplyManifest(applyCtx, clusterName, state.Manifests.Service)
+		cancel()
+		if err != nil {
+			slog.Error("failed to apply service", "deploy_id", deployID, "error", err)
+			updateStep("create_service", "failed", fmt.Sprintf("Failed: %v", err))
+			s.mu.Lock()
+			now := time.Now()
+			state.Status.Status = "failed"
+			state.Status.CompletedAt = &now
+			s.mu.Unlock()
+			return
+		}
+	}
+	updateStep("create_service", "completed", "Service applied")
+
+	// Apply optional resources (best-effort)
+	if state.Manifests != nil {
+		if state.Manifests.HPA != "" {
+			if err := s.kubernetes.ApplyManifest(ctx, clusterName, state.Manifests.HPA); err != nil {
+				slog.Warn("failed to apply HPA", "deploy_id", deployID, "error", err)
+			}
+		}
+		if state.Manifests.ConfigMap != "" {
+			if err := s.kubernetes.ApplyManifest(ctx, clusterName, state.Manifests.ConfigMap); err != nil {
+				slog.Warn("failed to apply ConfigMap", "deploy_id", deployID, "error", err)
+			}
+		}
+	}
 
 	// Mark as completed
+	serviceName := state.Request.ContainerID
 	s.mu.Lock()
 	now := time.Now()
 	state.Status.Status = "completed"
 	state.Status.CompletedAt = &now
 	state.Status.Result = &models.DeployResult{
-		DeploymentName: state.Request.ContainerID,
-		Namespace:      state.Request.Namespace,
-		Replicas:       2,
-		PodsReady:      "2/2",
-		ServiceURL:     fmt.Sprintf("http://%s.%s.svc.cluster.local", state.Request.ContainerID, state.Request.Namespace),
+		DeploymentName: serviceName,
+		Namespace:      ns,
+		Replicas:       1,
+		PodsReady:      "pending",
+		ServiceURL:     fmt.Sprintf("http://%s.%s.svc.cluster.local", serviceName, ns),
 	}
 	s.mu.Unlock()
 
@@ -378,6 +427,38 @@ func (s *Server) handleGetDeployHistory(c *gin.Context) {
 	})
 }
 
+// handleGetUnifiedHistory returns a paginated, chronological list of both
+// single and stack deploys in one unified response.
+func (s *Server) handleGetUnifiedHistory(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	items, total, err := s.data.ListUnifiedHistory(c.Request.Context(), offset, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error: models.ErrorDetail{Code: "DATA_ERROR", Message: err.Error()},
+		})
+		return
+	}
+
+	totalPages := (total + limit - 1) / limit
+
+	c.JSON(http.StatusOK, models.PaginatedResponse{
+		Items:      items,
+		Total:      total,
+		Page:       page,
+		Limit:      limit,
+		TotalPages: totalPages,
+	})
+}
+
 func detectServiceType(info ai.ContainerInfo) string {
 	image := strings.ToLower(info.Image)
 	switch {
@@ -436,12 +517,43 @@ func (s *Server) handleUndeployFromK8s(c *gin.Context) {
 		return
 	}
 
-	// Best-effort delete K8s resources using service name
-	if err := s.kubernetes.DeleteDeployment(ctx, deployment.TargetCluster, deployment.Namespace, deployment.ServiceName); err != nil {
-		slog.Warn("failed to delete k8s deployment (may already be gone)", "name", deployment.ServiceName, "error", err)
-	}
-	if err := s.kubernetes.DeleteService(ctx, deployment.TargetCluster, deployment.Namespace, deployment.ServiceName); err != nil {
-		slog.Warn("failed to delete k8s service (may already be gone)", "name", deployment.ServiceName, "error", err)
+	// Best-effort delete all K8s resources (order: HPA → Ingress → ConfigMap → Service → Deployment)
+	cluster := deployment.TargetCluster
+	ns := deployment.Namespace
+	svcName := deployment.ServiceName
+
+	// If stored manifests are available, parse and delete all resource kinds
+	if deployment.ManifestJSON != "" {
+		var storedManifests map[string]string
+		if err := json.Unmarshal([]byte(deployment.ManifestJSON), &storedManifests); err == nil {
+			// Phase 1: Delete known kinds in dependency-safe order
+			deleteOrder := []string{"HPA", "HorizontalPodAutoscaler", "Ingress", "HTTPRoute", "Gateway", "Service", "Deployment", "StatefulSet", "Secret", "ConfigMap", "PersistentVolumeClaim"}
+			deleted := map[string]bool{}
+			for _, kind := range deleteOrder {
+				if _, ok := storedManifests[kind]; ok {
+					deleted[kind] = true
+					if err := s.kubernetes.DeleteResource(ctx, cluster, kind, ns, svcName); err != nil {
+						slog.Warn("failed to delete resource", "kind", kind, "name", svcName, "error", err)
+					}
+				}
+			}
+			// Phase 2: Delete any remaining kinds not in the predefined order
+			for kind := range storedManifests {
+				if !deleted[kind] {
+					if err := s.kubernetes.DeleteResource(ctx, cluster, kind, ns, svcName); err != nil {
+						slog.Warn("failed to delete resource", "kind", kind, "name", svcName, "error", err)
+					}
+				}
+			}
+		}
+	} else {
+		// Fallback: delete Deployment and Service by name
+		if err := s.kubernetes.DeleteResource(ctx, cluster, "Deployment", ns, svcName); err != nil {
+			slog.Warn("failed to delete k8s deployment (may already be gone)", "name", svcName, "error", err)
+		}
+		if err := s.kubernetes.DeleteResource(ctx, cluster, "Service", ns, svcName); err != nil {
+			slog.Warn("failed to delete k8s service (may already be gone)", "name", svcName, "error", err)
+		}
 	}
 
 	now := time.Now()

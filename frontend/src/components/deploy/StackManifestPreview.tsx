@@ -42,15 +42,17 @@ function sortedKinds(manifests: StackManifests): string[] {
 function getServiceResources(manifests: StackManifests, serviceName: string) {
   const resources: { kind: string; name: string; yaml: string }[] = [];
   for (const kind of sortedKinds(manifests)) {
-    const entries = manifests[kind];
-    for (const [name, yaml] of Object.entries(entries)) {
-      // _namespace 서비스는 Namespace kind 리소스와 매칭
+    // Namespace kind는 _namespace 탭에서만 표시
+    if (kind === 'Namespace') {
       if (serviceName === '_namespace') {
-        if (kind === 'Namespace') {
+        for (const [name, yaml] of Object.entries(manifests[kind])) {
           resources.push({ kind, name, yaml });
         }
-        continue;
       }
+      continue;
+    }
+    const entries = manifests[kind];
+    for (const [name, yaml] of Object.entries(entries)) {
       if (name === serviceName || name.startsWith(serviceName + '-') || name.endsWith('-' + serviceName)) {
         resources.push({ kind, name, yaml });
       }
@@ -61,14 +63,13 @@ function getServiceResources(manifests: StackManifests, serviceName: string) {
 
 function getUnmatchedResources(manifests: StackManifests, serviceNames: string[]) {
   const resources: { kind: string; name: string; yaml: string }[] = [];
-  const hasNamespaceService = serviceNames.includes('_namespace');
   for (const kind of sortedKinds(manifests)) {
+    // Namespace kind는 항상 _namespace 탭에서 처리 — Shared에 넣지 않음
+    if (kind === 'Namespace') continue;
     const entries = manifests[kind];
     for (const [name, yaml] of Object.entries(entries)) {
-      // _namespace 서비스가 있으면 Namespace kind는 이미 매칭됨
-      if (hasNamespaceService && kind === 'Namespace') continue;
       const matched = serviceNames.some(
-        (svc) => name === svc || name.startsWith(svc + '-') || name.endsWith('-' + svc),
+        (svc) => svc !== '_namespace' && (name === svc || name.startsWith(svc + '-') || name.endsWith('-' + svc)),
       );
       if (!matched) {
         resources.push({ kind, name, yaml });
