@@ -7,8 +7,8 @@ RUN npm ci
 
 COPY . .
 
-ARG VITE_API_URL=http://localhost:8080
-ARG VITE_WS_URL=ws://localhost:8080
+ARG VITE_API_URL
+ARG VITE_WS_URL
 
 RUN npm run build
 

@@ -3,7 +3,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from '@/components/layout/Layout';
 import { Dashboard } from '@/components/dashboard/Dashboard';
 import { DeployPage } from '@/pages/DeployPage';
-import { LogsPage } from '@/pages/LogsPage';
+import { ContainerDetailPage } from '@/pages/ContainerDetailPage';
+import { ClusterDetailPage } from '@/pages/ClusterDetailPage';
+import { SettingsPage } from '@/pages/SettingsPage';
+import { StackDeployDetailPage } from '@/pages/StackDeployDetailPage';
+import { ErrorBoundary } from '@/components/common/ErrorBoundary';
+import { ToastProvider } from '@/components/common/Toast';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,15 +23,22 @@ const queryClient = new QueryClient({
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Routes>
-          <Route element={<Layout />}>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/deploy" element={<DeployPage />} />
-            <Route path="/logs" element={<LogsPage />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <ToastProvider>
+        <ErrorBoundary>
+          <BrowserRouter>
+            <Routes>
+              <Route element={<Layout />}>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/container/:id" element={<ContainerDetailPage />} />
+                <Route path="/cluster/:name" element={<ClusterDetailPage />} />
+                <Route path="/deploy" element={<DeployPage />} />
+                <Route path="/deploy/:deployId" element={<StackDeployDetailPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Route>
+            </Routes>
+          </BrowserRouter>
+        </ErrorBoundary>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

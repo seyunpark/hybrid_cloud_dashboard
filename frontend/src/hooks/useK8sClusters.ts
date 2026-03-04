@@ -9,6 +9,14 @@ export function useK8sClusters() {
   });
 }
 
+export function useK8sNamespaces(cluster: string) {
+  return useQuery({
+    queryKey: ['k8s', 'namespaces', cluster],
+    queryFn: () => k8sApi.listNamespaces(cluster),
+    enabled: !!cluster,
+  });
+}
+
 export function useK8sPods(cluster: string, namespace = 'default') {
   return useQuery({
     queryKey: ['k8s', 'pods', cluster, namespace],

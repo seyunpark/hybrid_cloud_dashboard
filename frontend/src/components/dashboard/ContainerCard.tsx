@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { Container } from '@/api/types';
 import { StatusBadge } from '@/components/common/StatusBadge';
 import { formatBytes, formatCpuPercent } from '@/utils/formatters';
@@ -12,12 +13,15 @@ export function ContainerCard({ container, onDeploy }: ContainerCardProps) {
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
       <div className="mb-3 flex items-start justify-between">
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-sm font-semibold text-gray-900">
+          <Link
+            to={`/container/${container.id}`}
+            className="truncate text-sm font-semibold text-gray-900 hover:text-blue-600"
+          >
             {container.name}
-          </h3>
+          </Link>
           <p className="truncate text-xs text-gray-500">{container.image}</p>
         </div>
-        <StatusBadge status={container.status} />
+        <StatusBadge status={container.state} />
       </div>
 
       {/* Resource Stats */}
@@ -58,6 +62,12 @@ export function ContainerCard({ container, onDeploy }: ContainerCardProps) {
 
       {/* Actions */}
       <div className="flex gap-2 border-t border-gray-100 pt-3">
+        <Link
+          to={`/container/${container.id}`}
+          className="flex-1 rounded border border-gray-300 px-3 py-1.5 text-center text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
+        >
+          Details
+        </Link>
         <button
           onClick={() => onDeploy?.(container.id)}
           className="flex-1 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"

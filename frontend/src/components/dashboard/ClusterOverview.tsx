@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { Cluster } from '@/api/types';
 import { StatusBadge } from '@/components/common/StatusBadge';
 
@@ -7,12 +8,15 @@ interface ClusterOverviewProps {
 
 export function ClusterOverview({ cluster }: ClusterOverviewProps) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
       <div className="mb-3 flex items-start justify-between">
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-sm font-semibold text-gray-900">
+          <Link
+            to={`/cluster/${cluster.name}`}
+            className="truncate text-sm font-semibold text-gray-900 hover:text-blue-600"
+          >
             {cluster.name}
-          </h3>
+          </Link>
           <p className="text-xs text-gray-500">{cluster.type}</p>
         </div>
         <StatusBadge status={cluster.status} />
@@ -44,6 +48,15 @@ export function ClusterOverview({ cluster }: ClusterOverviewProps) {
           Kubernetes {cluster.info.version}
         </p>
       )}
+
+      <div className="mt-3 border-t border-gray-100 pt-3">
+        <Link
+          to={`/cluster/${cluster.name}`}
+          className="block w-full rounded border border-gray-300 px-3 py-1.5 text-center text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
+        >
+          View Details
+        </Link>
+      </div>
     </div>
   );
 }

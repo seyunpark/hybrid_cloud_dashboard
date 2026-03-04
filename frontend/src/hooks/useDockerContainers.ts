@@ -37,13 +37,3 @@ export function useStopContainer() {
   });
 }
 
-export function useDeleteContainer() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, force }: { id: string; force?: boolean }) =>
-      dockerApi.deleteContainer(id, force),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['docker', 'containers'] });
-    },
-  });
-}

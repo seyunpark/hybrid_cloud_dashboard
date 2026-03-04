@@ -22,7 +22,7 @@ export function useWebSocket({
   const connect = useCallback(() => {
     const wsUrl = url.startsWith('ws')
       ? url
-      : `${import.meta.env.VITE_WS_URL || 'ws://localhost:8080'}${url}`;
+      : `${import.meta.env.VITE_WS_URL || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`}${url}`;
 
     const ws = new WebSocket(wsUrl);
 

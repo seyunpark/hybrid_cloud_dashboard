@@ -19,6 +19,11 @@ const statusStyles: Record<string, string> = {
   analyzing: 'bg-blue-100 text-blue-800',
   deploying: 'bg-blue-100 text-blue-800',
   in_progress: 'bg-blue-100 text-blue-800',
+  deployed: 'bg-green-100 text-green-800',
+  deleted: 'bg-gray-100 text-gray-800',
+  cancelled: 'bg-gray-100 text-gray-800',
+  undeployed: 'bg-gray-100 text-gray-600',
+  generating: 'bg-purple-100 text-purple-800',
 };
 
 export function StatusBadge({ status }: StatusBadgeProps) {

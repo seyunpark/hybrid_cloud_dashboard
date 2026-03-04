@@ -20,6 +20,20 @@ func (s *Server) handleListClusters(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"clusters": clusters})
 }
 
+func (s *Server) handleListNamespaces(c *gin.Context) {
+	cluster := c.Param("cluster")
+
+	namespaces, err := s.kubernetes.ListNamespaces(c.Request.Context(), cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error: models.ErrorDetail{Code: "K8S_ERROR", Message: err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"namespaces": namespaces})
+}
+
 func (s *Server) handleListPods(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.DefaultQuery("namespace", "default")

@@ -68,6 +68,36 @@ export interface ClusterInfo {
   version: string;
 }
 
+export interface KubeContext {
+  name: string;
+  cluster: string;
+  user: string;
+  namespace?: string;
+  is_active: boolean;
+}
+
+export interface RegisterClusterRequest {
+  name: string;
+  context: string;
+  type?: string;
+  kubeconfig?: string;
+  registry?: string;
+}
+
+export interface AIConfig {
+  provider: string;
+  model: string;
+  api_key: string;
+  temperature: number;
+  configured: boolean;
+}
+
+export interface UpdateAIConfigRequest {
+  provider?: string;
+  api_key?: string;
+  model?: string;
+}
+
 export interface Pod {
   name: string;
   namespace: string;
@@ -152,7 +182,7 @@ export interface DeployResponse {
   ai_analysis?: AIAnalysis;
   recommendations?: Recommendations;
   manifests?: Manifests;
-  estimated_cost?: EstimatedCost;
+  estimated_cost?: { monthly_usd: number; breakdown: string };
 }
 
 export interface AIAnalysis {
@@ -176,11 +206,6 @@ export interface Manifests {
   service: string;
   hpa?: string;
   configmap?: string;
-}
-
-export interface EstimatedCost {
-  monthly_usd: number;
-  breakdown: string;
 }
 
 export interface DeployStatus {
@@ -210,17 +235,89 @@ export interface DeployResult {
 export interface DeploymentHistory {
   id: string;
   service_name: string;
-  image: string;
-  cluster: string;
+  image_name: string;
+  image_tag: string;
+  service_type: string;
+  language: string;
+  cpu_request: string;
+  cpu_limit: string;
+  memory_request: string;
+  memory_limit: string;
+  replicas: number;
+  actual_cpu: string;
+  actual_memory: string;
+  target_cluster: string;
   namespace: string;
   deployed_at: string;
   success: boolean;
+  status: string;
+  manifest_json?: string;
+  deleted_at?: string;
+  oom_events: number;
+  throttle_events: number;
   ai_generated: boolean;
   ai_confidence: number;
-  resources: {
-    cpu_request: string;
-    memory_request: string;
-  };
+}
+
+// --- Stack Deploy Models ---
+
+export interface StackDeployRequest {
+  container_ids: string[];
+  cluster_name?: string;
+  namespace?: string;
+  stack_name: string;
+  create_namespace?: boolean;
+  options: DeployOptions;
+}
+
+export interface ServiceConnection {
+  from: string;
+  to: string;
+  port: number;
+  env_var: string;
+}
+
+export interface StackTopology {
+  services: StackServiceInfo[];
+  connections: ServiceConnection[];
+  deploy_order: string[];
+}
+
+export interface StackServiceInfo {
+  container_id: string;
+  service_name: string;
+  service_type: string;
+  image: string;
+}
+
+// Dynamic manifest map: resource kind (e.g. "Deployment", "Service", "ConfigMap", "Secret")
+// → resource name → YAML string
+export type StackManifests = Record<string, Record<string, string>>;
+
+export interface StackDeployResponse {
+  deploy_id: string;
+  status: string;
+  stack_name: string;
+  topology?: StackTopology;
+  manifests?: StackManifests;
+  reasoning?: string;
+  confidence?: number;
+}
+
+export interface ServiceDeployStatus {
+  service_name: string;
+  status: string;
+  steps: DeployStep[];
+}
+
+export interface StackDeployStatus {
+  deploy_id: string;
+  status: string;
+  stack_name: string;
+  started_at?: string;
+  completed_at?: string;
+  services: Record<string, ServiceDeployStatus>;
+  deploy_order: string[];
 }
 
 // --- Common Response Models ---
@@ -238,50 +335,3 @@ export interface SuccessResponse {
   message: string;
 }
 
-export interface HealthResponse {
-  status: string;
-  timestamp: string;
-}
-
-export interface ReadyResponse {
-  status: string;
-  checks: Record<string, string>;
-  timestamp: string;
-}
-
-// --- WebSocket Message Types ---
-
-export interface DockerStatsMessage {
-  type: 'docker_stats';
-  timestamp: string;
-  containers: ContainerStats[];
-}
-
-export interface K8sMetricsMessage {
-  type: 'k8s_metrics';
-  timestamp: string;
-  cluster: string;
-  pods: {
-    name: string;
-    namespace: string;
-    cpu_usage: string;
-    memory_usage: string;
-    status: string;
-  }[];
-}
-
-export interface LogMessage {
-  type: 'log';
-  timestamp: string;
-  log: string;
-}
-
-export interface DeployStatusMessage {
-  type: 'deploy_status';
-  deploy_id: string;
-  timestamp: string;
-  step: string;
-  status: string;
-  progress: number;
-  message: string;
-}

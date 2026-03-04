@@ -1,6 +1,8 @@
 package api
 
 import (
+	"sync"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/seyunpark/hybrid_cloud_dashboard/internal/ai"
@@ -10,7 +12,16 @@ import (
 	"github.com/seyunpark/hybrid_cloud_dashboard/internal/kubernetes"
 	"github.com/seyunpark/hybrid_cloud_dashboard/internal/metrics"
 	"github.com/seyunpark/hybrid_cloud_dashboard/internal/registry"
+	"github.com/seyunpark/hybrid_cloud_dashboard/pkg/models"
 )
+
+// deployState holds in-memory state for an active deployment.
+type deployState struct {
+	Status    *models.DeployStatus
+	Response  *models.DeployResponse
+	Request   *models.DeployRequest
+	Manifests *models.ManifestResult
+}
 
 // Server holds all dependencies for the HTTP server.
 type Server struct {
@@ -22,6 +33,10 @@ type Server struct {
 	data       data.Store
 	registry   registry.Service
 	metrics    *metrics.Collector
+
+	deployStates      map[string]*deployState
+	stackDeployStates map[string]*stackDeployState
+	mu                sync.RWMutex
 }
 
 // NewServer creates and configures a new API server with all routes registered.
@@ -35,13 +50,15 @@ func NewServer(
 	metricsColl *metrics.Collector,
 ) *Server {
 	s := &Server{
-		cfg:        cfg,
-		docker:     dockerSvc,
-		kubernetes: k8sSvc,
-		ai:         aiSvc,
-		data:       dataStore,
-		registry:   registrySvc,
-		metrics:    metricsColl,
+		cfg:          cfg,
+		docker:       dockerSvc,
+		kubernetes:   k8sSvc,
+		ai:           aiSvc,
+		data:         dataStore,
+		registry:     registrySvc,
+		metrics:      metricsColl,
+		deployStates:      make(map[string]*deployState),
+		stackDeployStates: make(map[string]*stackDeployState),
 	}
 
 	s.setupRouter()
@@ -56,11 +73,19 @@ func (s *Server) setupRouter() {
 
 	// CORS
 	if s.cfg.Security.CORS.Enabled {
-		r.Use(cors.New(cors.Config{
-			AllowOrigins: s.cfg.Security.CORS.AllowedOrigins,
-			AllowMethods: s.cfg.Security.CORS.AllowedMethods,
-			AllowHeaders: s.cfg.Security.CORS.AllowedHeaders,
-		}))
+		corsConfig := cors.Config{
+			AllowMethods:    s.cfg.Security.CORS.AllowedMethods,
+			AllowHeaders:    s.cfg.Security.CORS.AllowedHeaders,
+			AllowWebSockets: true,
+		}
+		// "*" in allowed_origins means allow all
+		if len(s.cfg.Security.CORS.AllowedOrigins) == 1 && s.cfg.Security.CORS.AllowedOrigins[0] == "*" {
+			corsConfig.AllowAllOrigins = true
+		} else {
+			corsConfig.AllowOrigins = s.cfg.Security.CORS.AllowedOrigins
+			corsConfig.AllowCredentials = true
+		}
+		r.Use(cors.New(corsConfig))
 	}
 
 	// Health checks
@@ -84,6 +109,7 @@ func (s *Server) setupRouter() {
 		k8sGroup := api.Group("/k8s")
 		{
 			k8sGroup.GET("/clusters", s.handleListClusters)
+			k8sGroup.GET("/:cluster/namespaces", s.handleListNamespaces)
 			k8sGroup.GET("/:cluster/pods", s.handleListPods)
 			k8sGroup.GET("/:cluster/deployments", s.handleListDeployments)
 			k8sGroup.GET("/:cluster/services", s.handleListServices)
@@ -96,8 +122,25 @@ func (s *Server) setupRouter() {
 		{
 			deployGroup.POST("/docker-to-k8s", s.handleDeployDockerToK8s)
 			deployGroup.POST("/:deploy_id/execute", s.handleExecuteDeploy)
+			deployGroup.POST("/:deploy_id/refine", s.handleRefineDeploy)
+			deployGroup.POST("/:deploy_id/undeploy", s.handleUndeployFromK8s)
+			deployGroup.POST("/:deploy_id/redeploy", s.handleRedeployToK8s)
+			deployGroup.DELETE("/:deploy_id", s.handleDeleteDeployRecord)
 			deployGroup.GET("/:deploy_id/status", s.handleGetDeployStatus)
 			deployGroup.GET("/history", s.handleGetDeployHistory)
+
+			// Stack Deploy
+			deployGroup.GET("/stack", s.handleListActiveStackDeploys)
+			deployGroup.GET("/stack/:deploy_id", s.handleGetStackDeployDetail)
+			deployGroup.GET("/stack/:deploy_id/status", s.handleGetStackDeployStatus)
+			deployGroup.POST("/stack", s.handleDeployStack)
+			deployGroup.POST("/stack/:deploy_id/refine", s.handleRefineStackDeploy)
+			deployGroup.POST("/stack/:deploy_id/regenerate", s.handleRegenerateStackDeploy)
+			deployGroup.POST("/stack/:deploy_id/reopen", s.handleReopenStackDeploy)
+			deployGroup.POST("/stack/:deploy_id/execute", s.handleExecuteStackDeploy)
+			deployGroup.POST("/stack/:deploy_id/undeploy", s.handleUndeployStack)
+			deployGroup.POST("/stack/:deploy_id/redeploy", s.handleRedeployStack)
+			deployGroup.DELETE("/stack/:deploy_id", s.handleDeleteStackDeploy)
 		}
 
 		// Config
@@ -105,6 +148,11 @@ func (s *Server) setupRouter() {
 		{
 			configGroup.GET("/clusters", s.handleGetClustersConfig)
 			configGroup.GET("/ai", s.handleGetAIConfig)
+			configGroup.PUT("/ai", s.handleUpdateAIConfig)
+			configGroup.GET("/ai/models", s.handleListAIModels)
+			configGroup.GET("/kubecontexts", s.handleListKubeContexts)
+			configGroup.POST("/clusters", s.handleRegisterCluster)
+			configGroup.DELETE("/clusters/:name", s.handleUnregisterCluster)
 		}
 	}
 

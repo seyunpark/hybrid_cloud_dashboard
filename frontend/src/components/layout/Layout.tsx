@@ -3,7 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 const navItems = [
   { to: '/', label: 'Dashboard', icon: '⊞' },
   { to: '/deploy', label: 'Deployments', icon: '▶' },
-  { to: '/logs', label: 'Logs', icon: '☰' },
+  { to: '/settings', label: 'Settings', icon: '⚙' },
 ];
 
 export function Layout() {
