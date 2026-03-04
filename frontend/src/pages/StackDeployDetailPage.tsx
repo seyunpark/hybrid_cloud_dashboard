@@ -203,6 +203,7 @@ export function StackDeployDetailPage() {
   const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['deploy', 'active'] });
     queryClient.invalidateQueries({ queryKey: ['deploy', 'stack', deployId] });
+    queryClient.invalidateQueries({ queryKey: ['deploy', 'unified-history'] });
   }, [queryClient, deployId]);
 
   const undeployMutation = useMutation({
@@ -223,6 +224,7 @@ export function StackDeployDetailPage() {
     mutationFn: () => stackDeployApi.deleteStackDeploy(deployId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deploy', 'active'] });
+      queryClient.invalidateQueries({ queryKey: ['deploy', 'unified-history'] });
       navigate('/deploy');
     },
   });

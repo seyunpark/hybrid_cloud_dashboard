@@ -39,6 +39,7 @@ type StackContainerInfo struct {
 	StackName  string
 	Containers []ContainerInfo
 	Namespace  string
+	UserPrompt string
 }
 
 // StackManifestResult is the AI response for stack manifest generation.
@@ -74,7 +75,7 @@ func NewService(cfg config.AIConfig) (Service, error) {
 		apiKey:      cfg.APIKey,
 		temperature: cfg.Temperature,
 		maxTokens:   maxTokens,
-		httpClient:  &http.Client{Timeout: 60 * time.Second},
+		httpClient:  &http.Client{Timeout: 120 * time.Second},
 	}
 
 	switch cfg.Provider {
@@ -154,15 +155,30 @@ func (s *aiService) callProvider(ctx context.Context, systemPrompt, userPrompt s
 	}
 }
 
-// callWithRetry calls the AI provider with one retry on failure.
+// callWithRetry calls the AI provider with up to maxRetries retries using exponential backoff.
 func (s *aiService) callWithRetry(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
-	response, err := s.callProvider(ctx, systemPrompt, userPrompt)
-	if err == nil {
-		return response, nil
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * 3 * time.Second // 3s, 6s
+			slog.Warn("AI API call failed, retrying", "provider", s.provider, "attempt", attempt+1, "backoff", backoff, "error", lastErr)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return "", fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+			}
+		}
+		response, err := s.callProvider(ctx, systemPrompt, userPrompt)
+		if err == nil {
+			if attempt > 0 {
+				slog.Info("AI API call succeeded after retry", "provider", s.provider, "attempt", attempt+1)
+			}
+			return response, nil
+		}
+		lastErr = err
 	}
-	slog.Warn("AI API call failed, retrying once", "provider", s.provider, "error", err)
-	time.Sleep(2 * time.Second)
-	return s.callProvider(ctx, systemPrompt, userPrompt)
+	return "", lastErr
 }
 
 func (s *aiService) GenerateManifest(ctx context.Context, info ContainerInfo, history []models.DeploymentHistory) (*models.ManifestResult, error) {
@@ -245,7 +261,7 @@ func buildRefinePrompt(manifest *models.ManifestResult, feedback string) string 
 func buildSystemPrompt() string {
 	return `당신은 Kubernetes 배포 전문가입니다. Docker 컨테이너 정보와 유사 배포 이력을 바탕으로 최적의 Kubernetes manifest를 생성합니다.
 
-반드시 아래 JSON 구조로만 응답하세요 (앞뒤에 다른 텍스트 없이):
+반드시 아래 JSON 구조로만 응답하세요. 마크다운 코드블럭으로 감싸지 말고 순수 JSON만 출력:
 {
   "deployment": "<Deployment YAML 문자열>",
   "service": "<Service YAML 문자열>",
@@ -490,8 +506,9 @@ type geminiPart struct {
 }
 
 type geminiGenerationConfig struct {
-	Temperature float64 `json:"temperature"`
-	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+	Temperature     float64 `json:"temperature"`
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+	ResponseMimeType string `json:"responseMimeType,omitempty"`
 }
 
 type geminiResponse struct {
@@ -538,8 +555,9 @@ func (s *aiService) callGeminiAPI(ctx context.Context, systemPrompt, userPrompt 
 			},
 		},
 		GenerationConfig: &geminiGenerationConfig{
-			Temperature: s.temperature,
-			MaxOutputTokens: maxTokens,
+			Temperature:      s.temperature,
+			MaxOutputTokens:  maxTokens,
+			ResponseMimeType: "application/json",
 		},
 	}
 
@@ -589,10 +607,15 @@ func (s *aiService) callGeminiAPI(ctx context.Context, systemPrompt, userPrompt 
 	}
 
 	text := fullText.String()
+	finishReason := geminiResp.Candidates[0].FinishReason
 	slog.Info("Gemini API response received",
 		"text_len", len(text),
 		"parts_count", len(geminiResp.Candidates[0].Content.Parts),
-		"finish_reason", geminiResp.Candidates[0].FinishReason)
+		"finish_reason", finishReason)
+
+	if finishReason == "MAX_TOKENS" {
+		slog.Warn("Gemini response was truncated (MAX_TOKENS). Consider increasing maxOutputTokens", "text_len", len(text), "max_tokens", maxTokens)
+	}
 
 	return text, nil
 }
@@ -742,54 +765,55 @@ func (s *aiService) listGeminiModels(ctx context.Context, apiKey string) ([]stri
 }
 
 func parseManifestResponse(response string) (*models.ManifestResult, error) {
-	// Try parsing as JSON first (clean response)
 	var result models.ManifestResult
 	trimmed := strings.TrimSpace(response)
-	if err := json.Unmarshal([]byte(trimmed), &result); err == nil {
-		if err := validateYAML(result.Deployment); err == nil {
-			return &result, nil
-		} else {
-			slog.Debug("direct JSON parsed but YAML invalid", "error", err)
+
+	tryJSON := func(data, label string) bool {
+		if err := json.Unmarshal([]byte(data), &result); err != nil {
+			slog.Debug("single tryParse JSON failed", "method", label, "error", err)
+			return false
 		}
-	} else {
-		slog.Debug("direct JSON parse failed", "error", err)
+		if err := validateYAML(result.Deployment); err != nil {
+			slog.Debug("single tryParse YAML invalid", "method", label, "error", err)
+			return false
+		}
+		return true
 	}
 
-	// Try extracting content between code fences (```json ... ``` or ``` ... ```)
-	codeBlockRe := regexp.MustCompile("(?s)```(?:json)?\\s*\n(.*?)\n\\s*```")
-	codeMatches := codeBlockRe.FindStringSubmatch(response)
-	if len(codeMatches) > 1 {
-		content := strings.TrimSpace(codeMatches[1])
-		if err := json.Unmarshal([]byte(content), &result); err == nil {
-			if err := validateYAML(result.Deployment); err == nil {
-				return &result, nil
-			} else {
-				slog.Warn("code block JSON parsed but YAML invalid", "error", err, "deployment_preview", truncate(result.Deployment, 200))
-			}
-		} else {
-			slog.Warn("code block JSON parse failed", "error", err, "content_preview", truncate(content, 200))
-		}
-	} else {
-		slog.Debug("no code block found in response")
+	// Method 1: Direct JSON
+	if tryJSON(trimmed, "direct") {
+		return &result, nil
 	}
 
-	// Try finding JSON by locating first { and last } in the response
+	// Method 2: Strip code fences
+	stripped := stripCodeFences(trimmed)
+	if stripped != trimmed && tryJSON(stripped, "strip-fences") {
+		return &result, nil
+	}
+
+	// Method 3: First/last brace
 	firstBrace := strings.Index(trimmed, "{")
 	lastBrace := strings.LastIndex(trimmed, "}")
 	if firstBrace >= 0 && lastBrace > firstBrace {
-		jsonCandidate := trimmed[firstBrace : lastBrace+1]
-		if err := json.Unmarshal([]byte(jsonCandidate), &result); err == nil {
-			if err := validateYAML(result.Deployment); err == nil {
-				return &result, nil
-			} else {
-				slog.Warn("brace extraction JSON parsed but YAML invalid", "error", err, "deployment_preview", truncate(result.Deployment, 200))
-			}
-		} else {
-			slog.Warn("brace extraction JSON parse failed", "error", err)
+		if tryJSON(trimmed[firstBrace:lastBrace+1], "brace-extract") {
+			return &result, nil
 		}
 	}
 
-	// Try extracting YAML blocks
+	// Method 4: Repair truncated JSON
+	if firstBrace >= 0 {
+		raw := trimmed[firstBrace:]
+		if idx := strings.LastIndex(raw, "```"); idx > 0 {
+			raw = strings.TrimSpace(raw[:idx])
+		}
+		repaired := tryRepairJSON(raw)
+		if tryJSON(repaired, "repaired") {
+			slog.Info("single manifest parsed after JSON repair")
+			return &result, nil
+		}
+	}
+
+	// Method 5: Extract YAML blocks
 	yamlRe := regexp.MustCompile("(?s)```yaml\\s*\n?(.*?)\n?\\s*```")
 	yamlMatches := yamlRe.FindAllStringSubmatch(response, -1)
 	if len(yamlMatches) >= 1 {
@@ -975,7 +999,7 @@ func (s *aiService) RefineStackManifest(ctx context.Context, current *StackManif
 func buildStackSystemPrompt() string {
 	return `당신은 Kubernetes 멀티 서비스 배포 전문가입니다. 여러 Docker 컨테이너를 분석하여 서로 연결된 Kubernetes 스택 manifest를 생성합니다.
 
-반드시 아래 JSON 구조로만 응답하세요 (앞뒤에 다른 텍스트 없이):
+반드시 아래 JSON 구조로만 응답하세요. 마크다운 코드블럭으로 감싸지 말고 순수 JSON만 출력:
 {
   "topology": {
     "services": [{"container_id": "id", "service_name": "name", "service_type": "type", "image": "img"}],
@@ -1019,6 +1043,10 @@ func buildStackUserPrompt(info StackContainerInfo, history []models.DeploymentHi
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "## Stack: %s (namespace: %s)\n\n", info.StackName, info.Namespace)
+
+	if info.UserPrompt != "" {
+		fmt.Fprintf(&b, "## 사용자 요구사항\n%s\n\n", info.UserPrompt)
+	}
 
 	if len(history) > 0 {
 		b.WriteString("## 유사 배포 이력\n")
@@ -1098,30 +1126,94 @@ func buildStackRefinePrompt(manifest *StackManifestResult, feedback string) stri
 	return b.String()
 }
 
+// stripCodeFences removes markdown code fences from AI response.
+func stripCodeFences(s string) string {
+	trimmed := strings.TrimSpace(s)
+	// Remove opening fence: ```json, ```JSON, ```
+	if strings.HasPrefix(trimmed, "```") {
+		idx := strings.Index(trimmed, "\n")
+		if idx >= 0 {
+			trimmed = trimmed[idx+1:]
+		}
+	}
+	// Remove closing fence
+	if strings.HasSuffix(trimmed, "```") {
+		trimmed = strings.TrimSuffix(trimmed, "```")
+		trimmed = strings.TrimRight(trimmed, " \t\n\r")
+	}
+	return strings.TrimSpace(trimmed)
+}
+
+// tryRepairJSON attempts to close unclosed braces/brackets in truncated JSON.
+func tryRepairJSON(s string) string {
+	var stack []rune
+	inString := false
+	escaped := false
+	for _, ch := range s {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if len(stack) > 0 && stack[len(stack)-1] == ch {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	// If we're inside a string, close it first
+	if inString {
+		s += `""`
+	}
+	// Close remaining open braces/brackets in reverse order
+	for i := len(stack) - 1; i >= 0; i-- {
+		s += string(stack[i])
+	}
+	return s
+}
+
 func parseStackManifestResponse(response string) (*StackManifestResult, error) {
 	trimmed := strings.TrimSpace(response)
 
-	tryParse := func(data string) *StackManifestResult {
+	tryParse := func(data string, label string) *StackManifestResult {
 		var result StackManifestResult
 		if err := json.Unmarshal([]byte(data), &result); err != nil {
+			slog.Debug("stack tryParse JSON failed", "method", label, "error", err, "data_len", len(data))
 			return nil
 		}
 		if len(result.Manifests) > 0 {
+			slog.Debug("stack tryParse succeeded", "method", label, "manifest_kinds", len(result.Manifests))
 			return &result
 		}
 		// Fallback: try legacy format with top-level deployments/services keys
 		var legacy struct {
-			Topology    models.StackTopology       `json:"topology"`
-			Deployments map[string]string          `json:"deployments"`
-			Services    map[string]string          `json:"services"`
-			ConfigMaps  map[string]string          `json:"configmaps"`
-			HPAs        map[string]string          `json:"hpas"`
-			Secrets     map[string]string          `json:"secrets"`
+			Topology    models.StackTopology         `json:"topology"`
+			Deployments map[string]string            `json:"deployments"`
+			Services    map[string]string            `json:"services"`
+			ConfigMaps  map[string]string            `json:"configmaps"`
+			HPAs        map[string]string            `json:"hpas"`
+			Secrets     map[string]string            `json:"secrets"`
 			Manifests   map[string]map[string]string `json:"manifests"`
-			Reasoning   string                     `json:"reasoning"`
-			Confidence  float64                    `json:"confidence"`
+			Reasoning   string                       `json:"reasoning"`
+			Confidence  float64                      `json:"confidence"`
 		}
 		if err := json.Unmarshal([]byte(data), &legacy); err != nil || len(legacy.Deployments) == 0 {
+			slog.Debug("stack tryParse legacy format failed", "method", label)
 			return nil
 		}
 		// Convert legacy to new format
@@ -1150,24 +1242,38 @@ func parseStackManifestResponse(response string) (*StackManifestResult, error) {
 	}
 
 	// Method 1: Direct JSON
-	if r := tryParse(trimmed); r != nil {
+	if r := tryParse(trimmed, "direct"); r != nil {
 		return r, nil
 	}
 
-	// Method 2: Code block extraction
-	codeBlockRe := regexp.MustCompile("(?s)```(?:json)?\\s*\n(.*?)\n\\s*```")
-	codeMatches := codeBlockRe.FindStringSubmatch(response)
-	if len(codeMatches) > 1 {
-		if r := tryParse(strings.TrimSpace(codeMatches[1])); r != nil {
+	// Method 2: Strip code fences
+	stripped := stripCodeFences(trimmed)
+	if stripped != trimmed {
+		if r := tryParse(stripped, "strip-fences"); r != nil {
 			return r, nil
 		}
 	}
 
-	// Method 3: First/last brace
+	// Method 3: First/last brace extraction
 	firstBrace := strings.Index(trimmed, "{")
 	lastBrace := strings.LastIndex(trimmed, "}")
 	if firstBrace >= 0 && lastBrace > firstBrace {
-		if r := tryParse(trimmed[firstBrace : lastBrace+1]); r != nil {
+		candidate := trimmed[firstBrace : lastBrace+1]
+		if r := tryParse(candidate, "brace-extract"); r != nil {
+			return r, nil
+		}
+	}
+
+	// Method 4: Repair truncated JSON (close unclosed braces/brackets)
+	if firstBrace >= 0 {
+		raw := trimmed[firstBrace:]
+		// Strip trailing ``` if present
+		if idx := strings.LastIndex(raw, "```"); idx > 0 {
+			raw = strings.TrimSpace(raw[:idx])
+		}
+		repaired := tryRepairJSON(raw)
+		if r := tryParse(repaired, "repaired"); r != nil {
+			slog.Info("stack manifest parsed after JSON repair", "original_len", len(raw), "repaired_len", len(repaired))
 			return r, nil
 		}
 	}

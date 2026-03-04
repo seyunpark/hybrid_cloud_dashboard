@@ -304,6 +304,7 @@ export interface StackDeployRequest {
   namespace?: string;
   stack_name: string;
   create_namespace?: boolean;
+  prompt?: string;
   options: DeployOptions;
 }
 

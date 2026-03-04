@@ -19,7 +19,8 @@ configs/config.yaml
 !configs/config.example.yaml
 
 # 데이터베이스
-data/
+/data/
+backend/data/
 *.db
 *.sqlite
 *.sqlite3
@@ -140,5 +141,5 @@ ehthumbs_vista.db
 *.onnx
 *.pt
 *.pth
-models/
-!models/.gitkeep
+/models/
+!/models/.gitkeep

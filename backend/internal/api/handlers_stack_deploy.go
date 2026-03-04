@@ -62,10 +62,14 @@ func (s *Server) stateToRecord(state *stackDeployState) *models.StackDeployRecor
 	containerIDs := []string{}
 	clusterName := ""
 	namespace := "default"
+	createNamespace := false
+	prompt := ""
 	if state.Request != nil {
 		containerIDs = state.Request.ContainerIDs
 		clusterName = state.Request.ClusterName
 		namespace = state.Request.Namespace
+		createNamespace = state.Request.CreateNamespace
+		prompt = state.Request.Prompt
 	}
 
 	topologyJSON := ""
@@ -95,12 +99,14 @@ func (s *Server) stateToRecord(state *stackDeployState) *models.StackDeployRecor
 	}
 
 	return &models.StackDeployRecord{
-		DeployID:      state.Status.DeployID,
-		StackName:     state.Status.StackName,
-		ClusterName:   clusterName,
-		Namespace:     namespace,
-		ContainerIDs:  containerIDs,
-		Status:        state.Status.Status,
+		DeployID:        state.Status.DeployID,
+		StackName:       state.Status.StackName,
+		ClusterName:     clusterName,
+		Namespace:       namespace,
+		ContainerIDs:    containerIDs,
+		CreateNamespace: createNamespace,
+		Prompt:          prompt,
+		Status:          state.Status.Status,
 		StartedAt:     state.Status.StartedAt,
 		CompletedAt:   state.Status.CompletedAt,
 		TopologyJSON:  topologyJSON,
@@ -201,10 +207,12 @@ func (s *Server) RestoreStackDeploy(record *models.StackDeployRecord) {
 	}
 
 	req := &models.StackDeployRequest{
-		ContainerIDs: record.ContainerIDs,
-		ClusterName:  record.ClusterName,
-		Namespace:    record.Namespace,
-		StackName:    record.StackName,
+		ContainerIDs:   record.ContainerIDs,
+		ClusterName:    record.ClusterName,
+		Namespace:      record.Namespace,
+		StackName:      record.StackName,
+		CreateNamespace: record.CreateNamespace,
+		Prompt:         record.Prompt,
 	}
 
 	s.mu.Lock()
@@ -347,11 +355,12 @@ func (s *Server) generateStackManifestAsync(deployID string, req models.StackDep
 		StackName:  req.StackName,
 		Containers: containerInfos,
 		Namespace:  req.Namespace,
+		UserPrompt: req.Prompt,
 	}
 
 	similar, _ := s.data.FindSimilar(context.Background(), "", "", 5)
 
-	aiCtx, aiCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	aiCtx, aiCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer aiCancel()
 
 	manifest, err := s.ai.GenerateStackManifest(aiCtx, stackInfo, similar)
@@ -826,6 +835,7 @@ func (s *Server) handleGetStackDeployDetail(c *gin.Context) {
 
 func (s *Server) handleDeleteStackDeploy(c *gin.Context) {
 	deployID := c.Param("deploy_id")
+	ctx := c.Request.Context()
 
 	// Check in-memory first
 	s.mu.Lock()
@@ -848,12 +858,16 @@ func (s *Server) handleDeleteStackDeploy(c *gin.Context) {
 			})
 			return
 		}
+		// Mark as deleted in-memory, then persist to DB before removing from memory
+		state.Status.Status = "deleted"
+		state.Response.Status = "deleted"
+		s.updateStackDeployInDB(ctx, state)
 		delete(s.stackDeployStates, deployID)
 		s.mu.Unlock()
 	} else {
 		s.mu.Unlock()
 		// Check DB record status
-		record, err := s.data.GetStackDeploy(c.Request.Context(), deployID)
+		record, err := s.data.GetStackDeploy(ctx, deployID)
 		if err != nil || record == nil {
 			c.JSON(http.StatusNotFound, models.ErrorResponse{
 				Error: models.ErrorDetail{Code: "DEPLOY_NOT_FOUND", Message: "stack deployment not found"},
@@ -872,18 +886,11 @@ func (s *Server) handleDeleteStackDeploy(c *gin.Context) {
 			})
 			return
 		}
-	}
-
-	// Soft-delete: mark as "deleted" instead of removing from DB (preserves history)
-	record, err := s.data.GetStackDeploy(c.Request.Context(), deployID)
-	if err == nil && record != nil {
+		// Soft-delete in DB
 		record.Status = "deleted"
-		if err := s.data.UpdateStackDeploy(c.Request.Context(), record); err != nil {
+		if err := s.data.UpdateStackDeploy(ctx, record); err != nil {
 			slog.Error("failed to soft-delete stack deploy", "deploy_id", deployID, "error", err)
 		}
-	} else {
-		// Not in DB — nothing to do (was only in memory)
-		slog.Info("stack deploy not found in DB, skipping soft-delete", "deploy_id", deployID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "stack deployment record removed"})

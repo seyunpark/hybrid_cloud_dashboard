@@ -86,6 +86,7 @@ export function DeployPage() {
       clusterName: string,
       namespace: string,
       createNamespace: boolean,
+      prompt: string,
     ) => {
       setStackLoading(true);
       setStackError(null);
@@ -96,6 +97,7 @@ export function DeployPage() {
           cluster_name: clusterName,
           namespace,
           create_namespace: createNamespace,
+          prompt: prompt || undefined,
           options: { high_availability: false, enable_hpa: false },
         });
         setShowModal(false);

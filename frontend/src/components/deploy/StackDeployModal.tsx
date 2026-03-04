@@ -7,7 +7,7 @@ interface StackDeployModalProps {
   onClose: () => void;
   containers: Container[];
   clusters: Cluster[];
-  onDeploy: (containerIds: string[], stackName: string, clusterName: string, namespace: string, createNamespace: boolean) => void;
+  onDeploy: (containerIds: string[], stackName: string, clusterName: string, namespace: string, createNamespace: boolean, prompt: string) => void;
   isLoading?: boolean;
   error?: string | null;
 }
@@ -27,6 +27,7 @@ export function StackDeployModal({
   const [namespace, setNamespace] = useState('default');
   const [isNewNamespace, setIsNewNamespace] = useState(false);
   const [newNamespaceInput, setNewNamespaceInput] = useState('');
+  const [prompt, setPrompt] = useState('');
 
   const { data: nsData } = useK8sNamespaces(selectedCluster);
   const namespaceList = nsData ?? [];
@@ -46,7 +47,7 @@ export function StackDeployModal({
   const handleSubmit = () => {
     const ids = Array.from(selectedIds);
     const name = stackName.trim() || `${containers.find(c => c.id === ids[0])?.name || 'app'}-stack`;
-    onDeploy(ids, name, selectedCluster, effectiveNamespace, isNewNamespace);
+    onDeploy(ids, name, selectedCluster, effectiveNamespace, isNewNamespace, prompt.trim());
   };
 
   const runningContainers = containers.filter((c) => c.status.startsWith('Up'));
@@ -192,6 +193,21 @@ export function StackDeployModal({
               </button>
             </div>
           )}
+        </div>
+
+        {/* AI Prompt */}
+        <div className="mb-4">
+          <label className="mb-1 block text-sm font-medium text-gray-700">
+            Requirements <span className="font-normal text-gray-400">(optional)</span>
+          </label>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="예: HPA 적용해줘 / replicas 3개로 설정 / DB는 StatefulSet으로 / Ingress 추가해줘"
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none"
+            rows={2}
+            disabled={isLoading}
+          />
         </div>
 
         {/* Actions */}
