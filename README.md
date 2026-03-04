@@ -15,15 +15,18 @@ AI 기반 하이브리드 환경 통합 모니터링 및 지능형 배포 시스
 - Pod/Deployment 상태 추적
 
 ### 2. AI 기반 지능형 배포
-- LLM을 활용한 Kubernetes Manifest 자동 생성
-- 과거 배포 패턴 학습 및 최적 설정 추천
+- LLM을 활용한 Kubernetes Manifest 자동 생성 (단일 컨테이너 + 멀티 컨테이너 스택)
+- 과거 배포 패턴 학습 및 최적 설정 추천 (Few-shot Learning)
 - 리소스 할당 자동 최적화
 - 보안 설정 자동 적용
+- 서비스 간 토폴로지 분석 및 배포 순서 결정
 
 ### 3. 원클릭 배포
 - Docker → Kubernetes 자동 배포
 - Container Registry 푸시 자동화
 - 배포 상태 실시간 모니터링
+- 배포 라이프사이클 관리 (배포/언디플로이/리디플로이/삭제)
+- 통합 배포 히스토리 (단일+스택, 페이지네이션)
 
 ## 기술 스택
 
@@ -32,19 +35,19 @@ AI 기반 하이브리드 환경 통합 모니터링 및 지능형 배포 시스
 - Gin (Web Framework)
 - docker/docker (Docker SDK)
 - k8s.io/client-go (Kubernetes SDK)
-- OpenAI/Claude API (AI 기능)
+- OpenAI / Claude / Gemini API (AI 기능)
+- SQLite (배포 이력, 설정 저장)
 
 ### Frontend
-- React 18
-- TypeScript
-- TailwindCSS
-- React Query
-- Recharts
+- React 19, TypeScript
+- Vite 7, TailwindCSS v4
+- React Query v5, React Router v7
+- Recharts 3
 
 ### AI
-- GPT-4 / Claude 3.5 Sonnet
-- Few-shot Learning
-- Prompt Engineering
+- OpenAI GPT-4 / Claude / Google Gemini
+- Few-shot Learning + Chain-of-Thought
+- 3회 재시도 + 지수 백오프, 템플릿 기반 fallback
 
 ## 프로젝트 구조
 
@@ -54,18 +57,22 @@ AI 기반 하이브리드 환경 통합 모니터링 및 지능형 배포 시스
 │   ├── cmd/
 │   │   └── server/
 │   ├── internal/
-│   │   ├── api/           # API 핸들러
+│   │   ├── api/           # API 핸들러 (REST + WebSocket)
 │   │   ├── docker/        # Docker 관리
 │   │   ├── kubernetes/    # K8s 관리
-│   │   ├── ai/            # AI 엔진
+│   │   ├── ai/            # AI 엔진 (OpenAI/Claude/Gemini)
+│   │   ├── data/          # SQLite 데이터 레이어
+│   │   ├── registry/      # Container Registry
+│   │   ├── metrics/       # 메트릭 수집
 │   │   └── config/        # 설정 관리
-│   └── pkg/
+│   └── pkg/models/        # 공유 데이터 모델
 ├── frontend/              # React 프론트엔드
 │   ├── src/
-│   │   ├── components/
-│   │   ├── hooks/
-│   │   ├── api/
-│   │   └── utils/
+│   │   ├── components/    # UI 컴포넌트 (dashboard, deploy, common, layout)
+│   │   ├── hooks/         # React Query/WebSocket 훅
+│   │   ├── pages/         # 페이지 컴포넌트
+│   │   ├── api/           # API 클라이언트 + 타입
+│   │   └── utils/         # 유틸리티 함수
 │   └── public/
 ├── docs/                  # 문서
 │   ├── adr/              # Architecture Decision Records
@@ -87,7 +94,7 @@ AI 기반 하이브리드 환경 통합 모니터링 및 지능형 배포 시스
 - Go 1.21+ (개발 시)
 - Node.js 18+ (개발 시)
 - Kubernetes 클러스터 접근 권한
-- OpenAI 또는 Claude API Key
+- OpenAI, Claude 또는 Gemini API Key
 
 ### 설치 및 실행
 

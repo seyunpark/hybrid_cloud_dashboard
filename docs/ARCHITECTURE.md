@@ -34,7 +34,7 @@
 │  └─ Deployment Controller                      │
 │                                                 │
 │  AI Engine                                      │
-│  ├─ LLM Client (OpenAI/Claude API)             │
+│  ├─ LLM Client (OpenAI/Claude/Gemini API)      │
 │  ├─ Prompt Builder (Few-shot)                  │
 │  ├─ Manifest Generator                         │
 │  ├─ Resource Predictor                         │
@@ -52,10 +52,10 @@
        │          │          │
        ↓          ↓          ↓
   ┌─────────┐ ┌──────────┐ ┌──────────┐
-  │  Docker │ │ K8s API  │ │  LLM API │
-  │   API   │ │ Servers  │ │ (OpenAI) │
-  │ (Local) │ │ (Remote) │ │          │
-  └─────────┘ └──────────┘ └──────────┘
+  │  Docker │ │ K8s API  │ │  LLM API       │
+  │   API   │ │ Servers  │ │ (OpenAI/Claude │
+  │ (Local) │ │ (Remote) │ │  /Gemini)      │
+  └─────────┘ └──────────┘ └────────────────┘
 ```
 
 ## 주요 컴포넌트
@@ -69,7 +69,7 @@
 - WebSocket을 통한 실시간 업데이트
 
 #### 기술 스택
-- **React 18**: UI 라이브러리
+- **React 19**: UI 라이브러리
 - **TypeScript**: 타입 안정성
 - **React Query**: 서버 상태 관리 및 캐싱
 - **Recharts**: 메트릭 차트 렌더링
@@ -100,39 +100,31 @@
 - **Gorilla WebSocket**: WebSocket 서버
 - **docker/docker**: Docker Engine API
 - **k8s.io/client-go**: Kubernetes API
-- **OpenAI Go SDK**: LLM API 클라이언트
+- **HTTP Client**: LLM API 클라이언트 (OpenAI, Claude, Gemini)
 
 #### 주요 모듈
 
 ##### API Layer (`internal/api/`)
-- `router.go`: API 라우팅 설정
-- `handlers.go`: HTTP 요청 핸들러
-- `websocket.go`: WebSocket 핸들러
-- `middleware.go`: 인증, 로깅 등
+- `router.go`: API 라우팅 설정 (42 REST + 5 WebSocket)
+- `handlers_docker.go`: Docker 컨테이너 핸들러
+- `handlers_k8s.go`: Kubernetes 리소스 핸들러
+- `handlers_deploy.go`: 단일 컨테이너 배포 핸들러
+- `handlers_stack_deploy.go`: 스택 배포 핸들러 (멀티 컨테이너)
+- `handlers_config.go`: 설정/클러스터/AI 관리 핸들러
+- `websocket.go`: WebSocket 핸들러 (메트릭, 로그, 배포 상태)
+- `middleware.go`: CORS, 로깅 미들웨어
 
 ##### Docker Manager (`internal/docker/`)
-- `client.go`: Docker API 클라이언트
-- `manager.go`: 컨테이너 관리
-- `stats.go`: 컨테이너 통계 수집
-- `logs.go`: 로그 스트리밍
+- `docker.go`: Docker API 클라이언트 + 컨테이너 관리
 
 ##### Kubernetes Manager (`internal/kubernetes/`)
-- `client.go`: K8s API 클라이언트
-- `manager.go`: 클러스터 관리
-- `deployer.go`: 배포 실행
-- `resources.go`: 리소스 조회
+- `kubernetes.go`: K8s API 클라이언트 + 클러스터/리소스 관리
 
 ##### AI Engine (`internal/ai/`)
-- `client.go`: LLM API 클라이언트
-- `prompt_builder.go`: 프롬프트 생성
-- `manifest_generator.go`: Manifest 생성
-- `resource_predictor.go`: 리소스 예측
-- `few_shot.go`: Few-shot 예시 관리
+- `ai.go`: LLM 클라이언트 (OpenAI/Claude/Gemini), 프롬프트 빌더, 매니페스트 생성 (단일+스택), 3회 재시도 + 지수 백오프, JSON 파싱 복구, 템플릿 fallback
 
 ##### Data Layer (`internal/data/`)
-- `deployment_store.go`: 배포 이력 저장
-- `similarity_search.go`: 유사 배포 검색
-- `models.go`: 데이터 모델
+- `store.go`: SQLite 기반 Store 인터페이스 구현 (배포 이력, 설정, 클러스터 등록, 스택 배포, 통합 히스토리, 오래된 레코드 정리)
 
 ### 3. AI Engine
 
@@ -288,11 +280,11 @@ docker:
     socket: unix:///var/run/docker.sock
 
 ai:
-  provider: openai
-  model: gpt-4-turbo-preview
-  api_key: ${OPENAI_API_KEY}
+  provider: gemini  # openai, claude, azure-openai, gemini
+  model: gemini-2.0-flash
+  api_key: ${GEMINI_API_KEY}
   temperature: 0.3
-  max_tokens: 2000
+  max_tokens: 8192
 ```
 
 ## 보안 고려사항
@@ -338,7 +330,7 @@ ai:
 
 ### 기능 확장
 - 플러그인 아키텍처 고려
-- AI 프로바이더 추상화 (OpenAI, Claude, Azure OpenAI)
+- AI 프로바이더 추상화 (OpenAI, Claude, Gemini, Azure OpenAI)
 - Registry 타입 확장 (ECR, ACR, GCR, Harbor)
 
 ## 모니터링 및 로깅

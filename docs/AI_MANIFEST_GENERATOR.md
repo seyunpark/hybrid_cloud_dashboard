@@ -2,7 +2,9 @@
 
 ## 개요
 
-AI Manifest Generator는 Docker 컨테이너 정보를 분석하여 Kubernetes Deployment, Service 등의 Manifest를 자동으로 생성하는 핵심 기능입니다.
+AI Manifest Generator는 Docker 컨테이너 정보를 분석하여 Kubernetes Deployment, Service 등의 Manifest를 자동으로 생성하는 핵심 기능입니다. 단일 컨테이너 배포와 멀티 컨테이너 스택 배포를 모두 지원합니다.
+
+**지원 AI 프로바이더:** OpenAI (GPT-4), Claude (Anthropic), Google Gemini, Azure OpenAI
 
 ## 작동 원리
 
@@ -119,25 +121,16 @@ func GenerateManifest(ctx context.Context, containerInfo ContainerInfo, similarD
     // 프롬프트 구성
     prompt := buildPrompt(containerInfo, similarDeployments)
 
-    // OpenAI API 호출
-    response, err := openaiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-        Model: "gpt-4-turbo-preview",
-        Messages: []openai.ChatCompletionMessage{
-            {
-                Role:    "system",
-                Content: systemPrompt,
-            },
-            {
-                Role:    "user",
-                Content: prompt,
-            },
-        },
-        Temperature: 0.3,  // 일관된 출력을 위해 낮은 값
-        MaxTokens:   2000,
-    })
+    // LLM API 호출 (OpenAI/Claude/Gemini 중 설정된 프로바이더 사용)
+    // 3회 재시도 + 지수 백오프 (3s, 6s)
+    response, err := callWithRetry(ctx, systemPrompt, prompt)
 
-    // 응답 파싱
-    return parseResponse(response.Choices[0].Message.Content)
+    // 4단계 응답 파싱:
+    // 1. 직접 JSON 파싱
+    // 2. 코드 펜스 제거 후 파싱
+    // 3. 중괄호 추출 후 파싱
+    // 4. 잘린 JSON 복구 후 파싱
+    return parseResponse(response)
 }
 ```
 
@@ -374,23 +367,32 @@ func GenerateManifests(containers []ContainerInfo) []*ManifestResult {
 ### 1. LLM API 장애
 
 ```go
-func GenerateManifestWithFallback(containerInfo ContainerInfo) (*ManifestResult, error) {
-    // 1차: AI 생성 시도
-    result, err := GenerateManifest(containerInfo)
-    if err == nil {
-        return result, nil
+// 재시도 로직: 3회 시도, 지수 백오프 (3s, 6s)
+func callWithRetry(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+    const maxAttempts = 3
+    for attempt := 0; attempt < maxAttempts; attempt++ {
+        if attempt > 0 {
+            backoff := time.Duration(attempt) * 3 * time.Second
+            select {
+            case <-time.After(backoff):
+            case <-ctx.Done():
+                return "", ctx.Err()
+            }
+        }
+        response, err := callProvider(ctx, systemPrompt, userPrompt)
+        if err == nil { return response, nil }
+        lastErr = err
     }
+    return "", lastErr
+}
+
+// AI 실패 시 템플릿 기반 fallback
+func GenerateManifestWithFallback(containerInfo ContainerInfo) (*ManifestResult, error) {
+    result, err := GenerateManifest(containerInfo)
+    if err == nil { return result, nil }
 
     log.Warn("AI generation failed, using template fallback", "error", err)
-
-    // 2차: 템플릿 기반 생성
-    result, err = GenerateFromTemplate(containerInfo)
-    if err == nil {
-        result.AIGenerated = false
-        return result, nil
-    }
-
-    return nil, fmt.Errorf("both AI and template generation failed: %w", err)
+    return GenerateFromTemplate(containerInfo) // AIGenerated = false
 }
 ```
 
@@ -546,8 +548,47 @@ func TestAIGenerationE2E(t *testing.T) {
 }
 ```
 
+## 스택 배포 (멀티 컨테이너)
+
+### 개요
+
+여러 Docker 컨테이너를 하나의 연결된 스택으로 K8s에 배포합니다. AI가 서비스 간 관계를 분석하여 토폴로지를 구성하고 최적 배포 순서를 결정합니다.
+
+### 스택 AI 분석 플로우
+
+1. 여러 컨테이너 정보 수집 (이미지, 포트, 환경변수)
+2. 서비스 간 연결 관계 감지 (환경변수의 호스트/포트 참조)
+3. 배포 순서 결정 (데이터베이스 → 백엔드 → 프론트엔드)
+4. 각 서비스별 Deployment, Service, ConfigMap 등 매니페스트 생성
+5. Namespace 리소스 자동 생성 (create_namespace 옵션)
+6. 사용자 프롬프트 반영 (커스텀 요구사항)
+
+### 스택 매니페스트 구조
+
+```json
+{
+  "topology": {
+    "services": [...],
+    "connections": [{"from": "frontend", "to": "backend", "port": 3000}],
+    "deploy_order": ["postgres", "backend", "frontend"]
+  },
+  "manifests": {
+    "Namespace": {"my-stack": "apiVersion: v1\nkind: Namespace\n..."},
+    "Deployment": {"frontend": "...", "backend": "...", "postgres": "..."},
+    "Service": {"frontend": "...", "backend": "...", "postgres": "..."},
+    "ConfigMap": {"app-config": "..."}
+  }
+}
+```
+
+### 스택 컨텍스트 타임아웃
+
+스택 매니페스트 생성은 여러 서비스를 한 번에 분석하므로 5분 타임아웃을 사용합니다.
+
 ## 참고자료
 
 - [OpenAI API Documentation](https://platform.openai.com/docs)
+- [Google Gemini API Documentation](https://ai.google.dev/docs)
+- [Anthropic Claude API Documentation](https://docs.anthropic.com/)
 - [Kubernetes API Conventions](https://kubernetes.io/docs/reference/using-api/api-concepts/)
 - [Prompt Engineering Guide](https://www.promptingguide.ai/)

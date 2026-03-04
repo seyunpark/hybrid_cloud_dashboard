@@ -10,22 +10,23 @@ server:
 
 # AI 설정
 ai:
-  # LLM Provider: openai, claude, azure-openai
-  provider: openai
+  # LLM Provider: openai, claude, azure-openai, gemini
+  provider: gemini
 
-  # API Key (환경변수 사용 권장: ${OPENAI_API_KEY})
+  # API Key (환경변수 사용 권장: ${OPENAI_API_KEY}, ${CLAUDE_API_KEY}, ${GEMINI_API_KEY})
   api_key: your-api-key-here
 
   # 모델
   # OpenAI: gpt-4-turbo-preview, gpt-4, gpt-3.5-turbo
-  # Claude: claude-3-opus-20240229, claude-3-sonnet-20240229
-  model: gpt-4-turbo-preview
+  # Claude: claude-3-opus-20240229, claude-3-sonnet-20240229, claude-sonnet-4-20250514
+  # Gemini: gemini-2.0-flash, gemini-2.5-flash-preview-05-20, gemini-2.5-pro-preview-05-06
+  model: gemini-2.0-flash
 
   # Temperature (0.0 ~ 1.0, 낮을수록 일관된 출력)
   temperature: 0.3
 
-  # 최대 토큰 수
-  max_tokens: 2000
+  # 최대 토큰 수 (단일 배포: 4096+, 스택 배포: 16384+)
+  max_tokens: 8192
 
   # Few-shot Learning 설정
   few_shot:

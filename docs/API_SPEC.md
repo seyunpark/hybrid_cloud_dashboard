@@ -22,6 +22,8 @@ Base URL: `http://localhost:8080/api`
 }
 ```
 
+---
+
 ## Docker API
 
 ### 컨테이너 목록 조회
@@ -79,10 +81,7 @@ GET /api/docker/containers/:id
   "status": "running",
   "created_at": "2024-01-15T10:00:00Z",
   "config": {
-    "env": [
-      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "PORT=80"
-    ],
+    "env": ["PATH=/usr/local/sbin:...", "PORT=80"],
     "cmd": ["nginx", "-g", "daemon off;"],
     "working_dir": "/app",
     "exposed_ports": ["80/tcp"]
@@ -147,6 +146,8 @@ DELETE /api/docker/containers/:id
 }
 ```
 
+---
+
 ## Kubernetes API
 
 ### 클러스터 목록 조회
@@ -162,7 +163,7 @@ GET /api/k8s/clusters
     {
       "name": "aws-eks-seoul",
       "type": "kubernetes",
-      "context": "arn:aws:eks:ap-northeast-2:123456789012:cluster/my-cluster",
+      "context": "arn:aws:eks:ap-northeast-2:...",
       "status": "connected",
       "info": {
         "nodes": 3,
@@ -170,20 +171,21 @@ GET /api/k8s/clusters
         "namespaces": 5,
         "version": "1.28"
       }
-    },
-    {
-      "name": "azure-aks-korea",
-      "type": "kubernetes",
-      "context": "azure-aks",
-      "status": "connected",
-      "info": {
-        "nodes": 2,
-        "pods": 12,
-        "namespaces": 3,
-        "version": "1.27"
-      }
     }
   ]
+}
+```
+
+### 네임스페이스 목록 조회
+
+```
+GET /api/k8s/:cluster/namespaces
+```
+
+**Response:**
+```json
+{
+  "namespaces": ["default", "kube-system", "kube-public", "my-app"]
 }
 ```
 
@@ -206,7 +208,7 @@ GET /api/k8s/:cluster/pods
       "namespace": "default",
       "status": "Running",
       "phase": "Running",
-      "node": "ip-10-0-1-100.ap-northeast-2.compute.internal",
+      "node": "ip-10-0-1-100",
       "ip": "10.244.1.5",
       "created_at": "2024-01-15T10:00:00Z",
       "containers": [
@@ -259,16 +261,8 @@ GET /api/k8s/:cluster/deployments
       "updated_replicas": 3,
       "image": "nginx:1.21",
       "created_at": "2024-01-15T10:00:00Z",
-      "conditions": [
-        {
-          "type": "Available",
-          "status": "True",
-          "reason": "MinimumReplicasAvailable"
-        }
-      ],
-      "selector": {
-        "app": "nginx"
-      }
+      "conditions": [...],
+      "selector": { "app": "nginx" }
     }
   ]
 }
@@ -293,16 +287,9 @@ GET /api/k8s/:cluster/services
       "type": "ClusterIP",
       "cluster_ip": "10.96.100.50",
       "ports": [
-        {
-          "name": "http",
-          "port": 80,
-          "target_port": 80,
-          "protocol": "TCP"
-        }
+        { "name": "http", "port": 80, "target_port": 80, "protocol": "TCP" }
       ],
-      "selector": {
-        "app": "nginx"
-      }
+      "selector": { "app": "nginx" }
     }
   ]
 }
@@ -325,12 +312,7 @@ POST /api/k8s/:cluster/deployments/:namespace/:name/scale
 ```json
 {
   "success": true,
-  "message": "Deployment scaled to 5 replicas",
-  "deployment": {
-    "name": "nginx-deployment",
-    "namespace": "default",
-    "replicas": 5
-  }
+  "message": "Deployment scaled to 5 replicas"
 }
 ```
 
@@ -348,9 +330,11 @@ POST /api/k8s/:cluster/pods/:namespace/:name/restart
 }
 ```
 
-## AI 기반 배포 API
+---
 
-### Docker → K8s 배포 (AI 기반 Manifest 생성)
+## 단일 컨테이너 배포 API
+
+### Docker -> K8s 배포 (AI 매니페스트 생성)
 
 ```
 POST /api/deploy/docker-to-k8s
@@ -386,12 +370,12 @@ POST /api/deploy/docker-to-k8s
     "memory_limit": "1Gi",
     "replicas": 2,
     "enable_hpa": true,
-    "reasoning": "Based on nginx web server pattern. Similar services average 300m CPU and 380Mi memory. Recommending 2 replicas for high availability with HPA enabled."
+    "reasoning": "Based on nginx web server pattern..."
   },
   "manifests": {
     "deployment": "apiVersion: apps/v1\nkind: Deployment\n...",
     "service": "apiVersion: v1\nkind: Service\n...",
-    "hpa": "apiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\n..."
+    "hpa": "apiVersion: autoscaling/v2\n..."
   },
   "estimated_cost": {
     "monthly_usd": 45.50,
@@ -400,7 +384,7 @@ POST /api/deploy/docker-to-k8s
 }
 ```
 
-### 배포 승인 및 실행
+### 배포 실행
 
 ```
 POST /api/deploy/:deploy_id/execute
@@ -411,36 +395,21 @@ POST /api/deploy/:deploy_id/execute
 {
   "approved": true,
   "modifications": {
-    "replicas": 3,
-    "cpu_request": "700m"
+    "replicas": 3
   }
 }
 ```
 
-**Response:**
+### 매니페스트 수정 요청
+
+```
+POST /api/deploy/:deploy_id/refine
+```
+
+**Request Body:**
 ```json
 {
-  "deploy_id": "deploy-xyz789",
-  "status": "deploying",
-  "steps": [
-    {
-      "step": "push_image",
-      "status": "in_progress",
-      "message": "Pushing image to registry..."
-    },
-    {
-      "step": "create_configmap",
-      "status": "pending"
-    },
-    {
-      "step": "create_deployment",
-      "status": "pending"
-    },
-    {
-      "step": "create_service",
-      "status": "pending"
-    }
-  ]
+  "feedback": "CPU limit을 2000m으로 높여주세요"
 }
 ```
 
@@ -463,12 +432,6 @@ GET /api/deploy/:deploy_id/status
       "status": "completed",
       "message": "Image pushed successfully",
       "completed_at": "2024-01-15T11:01:00Z"
-    },
-    {
-      "step": "create_deployment",
-      "status": "completed",
-      "message": "Deployment created",
-      "completed_at": "2024-01-15T11:02:00Z"
     }
   ],
   "result": {
@@ -489,128 +452,312 @@ GET /api/deploy/history
 
 **Query Parameters:**
 - `limit` (integer, optional): 결과 개수 제한 (default: 50)
-- `cluster` (string, optional): 클러스터 필터
-- `success` (boolean, optional): 성공 여부 필터
+
+### 통합 배포 이력 조회 (페이지네이션)
+
+```
+GET /api/deploy/unified-history
+```
+
+**Query Parameters:**
+- `page` (integer, optional): 페이지 번호 (default: 1)
+- `limit` (integer, optional): 페이지 당 항목 수 (default: 20, max: 100)
 
 **Response:**
 ```json
 {
-  "deployments": [
+  "items": [
     {
       "id": "deploy-xyz789",
-      "service_name": "nginx-app",
-      "image": "nginx:1.21",
+      "type": "single",
+      "name": "nginx-app",
+      "image_summary": "nginx:1.21",
       "cluster": "aws-eks-seoul",
       "namespace": "default",
-      "deployed_at": "2024-01-15T11:00:00Z",
-      "success": true,
+      "status": "deployed",
       "ai_generated": true,
-      "ai_confidence": 0.92,
-      "resources": {
-        "cpu_request": "500m",
-        "memory_request": "512Mi"
+      "confidence": 0.92,
+      "deployed_at": "2024-01-15T11:00:00Z",
+      "single_detail": {
+        "image_name": "nginx",
+        "image_tag": "1.21",
+        "replicas": 2
+      }
+    },
+    {
+      "id": "stack-abc123",
+      "type": "stack",
+      "name": "my-web-stack",
+      "image_summary": "3 services",
+      "cluster": "local-k8s",
+      "namespace": "production",
+      "status": "deployed",
+      "ai_generated": true,
+      "confidence": 0.87,
+      "deployed_at": "2024-01-15T10:00:00Z",
+      "stack_detail": {
+        "service_count": 3,
+        "services": ["frontend", "backend", "postgres"],
+        "deploy_order": ["postgres", "backend", "frontend"]
       }
     }
   ],
   "total": 150,
   "page": 1,
-  "page_size": 50
+  "limit": 20,
+  "total_pages": 8
 }
 ```
 
-## WebSocket API
-
-### Docker 통계 스트리밍
+### 언디플로이 (K8s 리소스 삭제)
 
 ```
-WS /ws/docker/stats
+POST /api/deploy/:deploy_id/undeploy
 ```
 
-**메시지 형식:**
+배포된 K8s 리소스(Deployment, Service 등)를 삭제하고 배포 상태를 "deleted"로 변경합니다.
+
+### 재배포
+
+```
+POST /api/deploy/:deploy_id/redeploy
+```
+
+저장된 매니페스트를 사용하여 재배포합니다.
+
+### 배포 기록 삭제
+
+```
+DELETE /api/deploy/:deploy_id
+```
+
+DB에서 배포 기록을 삭제합니다.
+
+---
+
+## 스택 배포 API
+
+여러 컨테이너를 하나의 연결된 스택으로 K8s에 배포합니다. AI가 서비스 간 토폴로지를 분석하고 배포 순서를 결정합니다.
+
+### 활성 스택 배포 목록
+
+```
+GET /api/deploy/stack/
+```
+
+**Response:**
+```json
+[
+  {
+    "deploy_id": "stack-abc123",
+    "stack_name": "my-web-stack",
+    "status": "pending",
+    "topology": { ... },
+    "manifests": { ... }
+  }
+]
+```
+
+### 스택 배포 상세 조회
+
+```
+GET /api/deploy/stack/:deploy_id
+```
+
+**Response:**
 ```json
 {
-  "type": "docker_stats",
-  "timestamp": "2024-01-15T11:00:00Z",
-  "containers": [
-    {
-      "id": "abc123",
-      "name": "nginx",
-      "cpu_percent": 5.2,
-      "memory_usage": 134217728,
-      "memory_limit": 536870912,
-      "network_rx_bytes": 1024000,
-      "network_tx_bytes": 512000
+  "deploy_id": "stack-abc123",
+  "status": "pending",
+  "stack_name": "my-web-stack",
+  "topology": {
+    "services": [
+      {
+        "container_id": "abc123",
+        "service_name": "frontend",
+        "service_type": "web-application",
+        "image": "react-app:latest"
+      },
+      {
+        "container_id": "def456",
+        "service_name": "backend",
+        "service_type": "api-server",
+        "image": "node-api:latest"
+      }
+    ],
+    "connections": [
+      {
+        "from": "frontend",
+        "to": "backend",
+        "port": 3000,
+        "env_var": "API_URL"
+      }
+    ],
+    "deploy_order": ["backend", "frontend"]
+  },
+  "manifests": {
+    "Deployment": {
+      "frontend": "apiVersion: apps/v1\n...",
+      "backend": "apiVersion: apps/v1\n..."
+    },
+    "Service": {
+      "frontend": "apiVersion: v1\n...",
+      "backend": "apiVersion: v1\n..."
+    },
+    "ConfigMap": {
+      "frontend-config": "apiVersion: v1\n..."
     }
-  ]
+  },
+  "reasoning": "Detected web frontend + API backend pattern...",
+  "confidence": 0.87
 }
 ```
 
-### K8s 메트릭 스트리밍
+### 스택 배포 상태 조회
 
 ```
-WS /ws/k8s/:cluster/metrics
+GET /api/deploy/stack/:deploy_id/status
 ```
 
-**Query Parameters:**
-- `namespace` (string, optional): 네임스페이스 필터
-
-**메시지 형식:**
+**Response:**
 ```json
 {
-  "type": "k8s_metrics",
-  "timestamp": "2024-01-15T11:00:00Z",
-  "cluster": "aws-eks-seoul",
-  "pods": [
-    {
-      "name": "nginx-deployment-7d64d9f5b4-xk8tz",
-      "namespace": "default",
-      "cpu_usage": "250m",
-      "memory_usage": "400Mi",
-      "status": "Running"
+  "deploy_id": "stack-abc123",
+  "status": "deploying",
+  "stack_name": "my-web-stack",
+  "started_at": "2024-01-15T11:00:00Z",
+  "services": {
+    "backend": {
+      "service_name": "backend",
+      "status": "completed",
+      "steps": [
+        { "step": "push_image", "status": "completed" },
+        { "step": "apply_manifest", "status": "completed" }
+      ]
+    },
+    "frontend": {
+      "service_name": "frontend",
+      "status": "in_progress",
+      "steps": [
+        { "step": "push_image", "status": "completed" },
+        { "step": "apply_manifest", "status": "in_progress" }
+      ]
     }
-  ]
+  },
+  "deploy_order": ["backend", "frontend"]
 }
 ```
 
-### 로그 스트리밍
+### 스택 배포 생성
 
 ```
-WS /ws/docker/:container_id/logs
-WS /ws/k8s/:cluster/:namespace/:pod/logs
+POST /api/deploy/stack/
 ```
 
-**Query Parameters:**
-- `follow` (boolean, optional): 실시간 팔로우 (default: true)
-- `tail` (integer, optional): 마지막 N줄 (default: 100)
-- `container` (string, optional): 특정 컨테이너 (K8s Pod용)
-
-**메시지 형식:**
+**Request Body:**
 ```json
 {
-  "type": "log",
-  "timestamp": "2024-01-15T11:00:00Z",
-  "log": "2024-01-15 11:00:00 [INFO] Server started on port 3000\n"
+  "container_ids": ["abc123", "def456", "ghi789"],
+  "cluster_name": "local-k8s",
+  "namespace": "production",
+  "stack_name": "my-web-stack",
+  "create_namespace": true,
+  "prompt": "frontend와 backend 사이에 nginx reverse proxy를 추가해주세요",
+  "options": {
+    "high_availability": true,
+    "enable_hpa": false
+  }
 }
 ```
 
-### 배포 상태 스트리밍
-
-```
-WS /ws/deploy/:deploy_id/status
-```
-
-**메시지 형식:**
+**Response:**
 ```json
 {
-  "type": "deploy_status",
-  "deploy_id": "deploy-xyz789",
-  "timestamp": "2024-01-15T11:00:00Z",
-  "step": "push_image",
-  "status": "in_progress",
-  "progress": 45,
-  "message": "Pushing layer 3/7..."
+  "deploy_id": "stack-abc123",
+  "status": "generating",
+  "stack_name": "my-web-stack"
 }
 ```
+
+AI 매니페스트 생성은 비동기로 진행됩니다. 상태는 `GET /api/deploy/stack/:deploy_id`로 폴링하거나 WebSocket으로 수신합니다.
+
+### 스택 매니페스트 수정 (피드백)
+
+```
+POST /api/deploy/stack/:deploy_id/refine
+```
+
+**Request Body:**
+```json
+{
+  "feedback": "backend의 메모리를 2Gi로 늘려주세요"
+}
+```
+
+### 스택 매니페스트 재생성
+
+```
+POST /api/deploy/stack/:deploy_id/regenerate
+```
+
+현재 컨테이너 정보와 프롬프트를 기반으로 매니페스트를 완전히 재생성합니다.
+
+### 스택 배포 재편집 (Reopen)
+
+```
+POST /api/deploy/stack/:deploy_id/reopen
+```
+
+완료/실패된 스택 배포를 "pending" 상태로 되돌려 매니페스트를 수정할 수 있게 합니다.
+
+### 스택 배포 실행
+
+```
+POST /api/deploy/stack/:deploy_id/execute
+```
+
+**Request Body:**
+```json
+{
+  "approved": true,
+  "cluster_name": "local-k8s",
+  "namespace": "production",
+  "create_namespace": true
+}
+```
+
+### 스택 언디플로이
+
+```
+POST /api/deploy/stack/:deploy_id/undeploy
+```
+
+배포된 스택의 모든 K8s 리소스를 삭제합니다. 배포 순서의 역순으로 삭제됩니다.
+
+### 스택 재배포
+
+```
+POST /api/deploy/stack/:deploy_id/redeploy
+```
+
+**Request Body (optional):**
+```json
+{
+  "cluster_name": "different-cluster",
+  "namespace": "staging",
+  "create_namespace": true
+}
+```
+
+### 스택 배포 삭제
+
+```
+DELETE /api/deploy/stack/:deploy_id
+```
+
+Soft-delete: 배포 상태를 "deleted"로 변경합니다. 통합 히스토리에 "deleted" 상태로 남습니다.
+
+---
 
 ## 설정 API
 
@@ -625,14 +772,61 @@ GET /api/config/clusters
 {
   "clusters": [
     {
-      "name": "aws-eks-seoul",
+      "name": "local-k8s",
       "type": "kubernetes",
-      "kubeconfig_path": "/path/to/kubeconfig",
-      "context": "arn:aws:eks:...",
-      "registry": "123456789.dkr.ecr.ap-northeast-2.amazonaws.com"
+      "kubeconfig": "~/.kube/config",
+      "context": "docker-desktop",
+      "registry": ""
     }
   ]
 }
+```
+
+### kubeconfig 컨텍스트 목록
+
+```
+GET /api/config/kubecontexts
+```
+
+**Query Parameters:**
+- `kubeconfig` (string, optional): kubeconfig 파일 경로
+
+**Response:**
+```json
+{
+  "contexts": [
+    {
+      "name": "docker-desktop",
+      "cluster": "docker-desktop",
+      "user": "docker-desktop",
+      "namespace": "",
+      "is_active": true
+    }
+  ]
+}
+```
+
+### 클러스터 등록
+
+```
+POST /api/config/clusters
+```
+
+**Request Body:**
+```json
+{
+  "name": "my-cluster",
+  "context": "my-context",
+  "type": "kubernetes",
+  "kubeconfig": "~/.kube/config",
+  "registry": "my-registry.com"
+}
+```
+
+### 클러스터 등록 해제
+
+```
+DELETE /api/config/clusters/:name
 ```
 
 ### AI 설정 조회
@@ -644,13 +838,88 @@ GET /api/config/ai
 **Response:**
 ```json
 {
-  "provider": "openai",
-  "model": "gpt-4-turbo-preview",
+  "provider": "gemini",
+  "model": "gemini-2.0-flash",
   "temperature": 0.3,
-  "few_shot_enabled": true,
-  "few_shot_examples": 5
+  "configured": true
 }
 ```
+
+### AI 설정 변경
+
+```
+PUT /api/config/ai
+```
+
+**Request Body:**
+```json
+{
+  "provider": "gemini",
+  "api_key": "your-api-key",
+  "model": "gemini-2.0-flash"
+}
+```
+
+### AI 모델 목록 조회
+
+```
+GET /api/config/ai/models
+```
+
+**Query Parameters:**
+- `provider` (string, required): AI 프로바이더 (openai, claude, gemini)
+- `api_key` (string, optional): API 키 (설정에 저장된 키 사용 가능)
+
+**Response:**
+```json
+{
+  "models": ["gemini-2.0-flash", "gemini-2.5-flash-preview-05-20", "gemini-2.5-pro-preview-05-06"]
+}
+```
+
+---
+
+## WebSocket API
+
+### Docker 통계 스트리밍
+
+```
+WS /ws/docker/stats
+```
+
+2초 간격으로 모든 컨테이너의 CPU, 메모리, 네트워크 메트릭을 전송합니다.
+
+### K8s 메트릭 스트리밍
+
+```
+WS /ws/k8s/:cluster/metrics
+```
+
+5초 간격으로 Pod, Deployment 정보를 전송합니다.
+
+### Docker 로그 스트리밍
+
+```
+WS /ws/docker/:container_id/logs
+```
+
+Docker 컨테이너 로그를 실시간으로 스트리밍합니다.
+
+### K8s Pod 로그 스트리밍
+
+```
+WS /ws/k8s/:cluster/:namespace/:pod/logs
+```
+
+### 배포 상태 스트리밍
+
+```
+WS /ws/deploy/:deploy_id/status
+```
+
+1초 간격으로 배포 상태를 전송합니다. 배포 완료/실패 시 연결이 종료됩니다.
+
+---
 
 ## 헬스 체크
 
@@ -674,8 +943,6 @@ GET /health
 GET /ready
 ```
 
-의존성 (Docker, K8s, AI API) 확인 포함
-
 **Response:**
 ```json
 {
@@ -690,18 +957,57 @@ GET /ready
 }
 ```
 
-## Rate Limiting
+---
 
-현재 버전에서는 Rate Limiting을 구현하지 않습니다. 향후 버전에서 추가 예정:
-- API: 100 requests/minute per IP
-- WebSocket: 1000 messages/minute per connection
+## 엔드포인트 요약
 
-## CORS
+| 그룹 | 메서드 | 경로 | 설명 |
+|------|--------|------|------|
+| Docker | GET | `/api/docker/containers` | 컨테이너 목록 |
+| Docker | GET | `/api/docker/containers/:id` | 컨테이너 상세 |
+| Docker | POST | `/api/docker/containers/:id/restart` | 재시작 |
+| Docker | POST | `/api/docker/containers/:id/stop` | 중지 |
+| Docker | DELETE | `/api/docker/containers/:id` | 삭제 |
+| K8s | GET | `/api/k8s/clusters` | 클러스터 목록 |
+| K8s | GET | `/api/k8s/:cluster/namespaces` | 네임스페이스 목록 |
+| K8s | GET | `/api/k8s/:cluster/pods` | Pod 목록 |
+| K8s | GET | `/api/k8s/:cluster/deployments` | Deployment 목록 |
+| K8s | GET | `/api/k8s/:cluster/services` | Service 목록 |
+| K8s | POST | `/api/k8s/:cluster/deployments/:ns/:name/scale` | 스케일링 |
+| K8s | POST | `/api/k8s/:cluster/pods/:ns/:name/restart` | Pod 재시작 |
+| Deploy | POST | `/api/deploy/docker-to-k8s` | AI 매니페스트 생성 |
+| Deploy | POST | `/api/deploy/:id/execute` | 배포 실행 |
+| Deploy | POST | `/api/deploy/:id/refine` | 매니페스트 수정 |
+| Deploy | POST | `/api/deploy/:id/undeploy` | 언디플로이 |
+| Deploy | POST | `/api/deploy/:id/redeploy` | 재배포 |
+| Deploy | DELETE | `/api/deploy/:id` | 기록 삭제 |
+| Deploy | GET | `/api/deploy/:id/status` | 상태 조회 |
+| Deploy | GET | `/api/deploy/history` | 이력 조회 |
+| Deploy | GET | `/api/deploy/unified-history` | 통합 이력 (페이지네이션) |
+| Stack | GET | `/api/deploy/stack/` | 활성 스택 목록 |
+| Stack | GET | `/api/deploy/stack/:id` | 스택 상세 |
+| Stack | GET | `/api/deploy/stack/:id/status` | 스택 상태 |
+| Stack | POST | `/api/deploy/stack/` | 스택 생성 |
+| Stack | POST | `/api/deploy/stack/:id/refine` | 스택 수정 |
+| Stack | POST | `/api/deploy/stack/:id/regenerate` | 스택 재생성 |
+| Stack | POST | `/api/deploy/stack/:id/reopen` | 스택 재편집 |
+| Stack | POST | `/api/deploy/stack/:id/execute` | 스택 실행 |
+| Stack | POST | `/api/deploy/stack/:id/undeploy` | 스택 언디플로이 |
+| Stack | POST | `/api/deploy/stack/:id/redeploy` | 스택 재배포 |
+| Stack | DELETE | `/api/deploy/stack/:id` | 스택 삭제 |
+| Config | GET | `/api/config/clusters` | 클러스터 설정 |
+| Config | GET | `/api/config/kubecontexts` | kubeconfig 컨텍스트 |
+| Config | POST | `/api/config/clusters` | 클러스터 등록 |
+| Config | DELETE | `/api/config/clusters/:name` | 클러스터 해제 |
+| Config | GET | `/api/config/ai` | AI 설정 조회 |
+| Config | PUT | `/api/config/ai` | AI 설정 변경 |
+| Config | GET | `/api/config/ai/models` | AI 모델 목록 |
+| Health | GET | `/health` | 헬스 체크 |
+| Health | GET | `/ready` | 준비 상태 |
+| WS | GET | `/ws/docker/stats` | Docker 메트릭 |
+| WS | GET | `/ws/k8s/:cluster/metrics` | K8s 메트릭 |
+| WS | GET | `/ws/docker/:id/logs` | Docker 로그 |
+| WS | GET | `/ws/k8s/:cluster/:ns/:pod/logs` | K8s 로그 |
+| WS | GET | `/ws/deploy/:id/status` | 배포 상태 |
 
-개발 환경에서는 모든 Origin 허용
-프로덕션 환경에서는 허용된 도메인만 설정
-
-## 버전 관리
-
-API 버전은 URL 경로에 포함: `/api/v1/...`
-현재는 버전 없이 시작하며, 향후 호환성 문제 발생 시 버전 추가 예정
+**총 42 REST + 5 WebSocket = 47 엔드포인트**

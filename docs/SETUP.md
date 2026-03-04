@@ -15,7 +15,7 @@
 ### 선택사항
 - Kubernetes 클러스터 (로컬 또는 원격)
 - kubectl CLI
-- OpenAI 또는 Claude API Key
+- OpenAI, Claude 또는 Gemini API Key
 
 ## 빠른 시작 (Docker Compose)
 
@@ -38,9 +38,9 @@ cp configs/config.example.yaml configs/config.yaml
 ```yaml
 # AI 설정
 ai:
-  provider: openai  # openai 또는 claude
+  provider: gemini  # openai, claude, azure-openai, gemini
   api_key: your-api-key-here
-  model: gpt-4-turbo-preview
+  model: gemini-2.0-flash
   temperature: 0.3
 
 # Docker 설정
@@ -104,7 +104,10 @@ go mod download
 
 ```bash
 # backend/.env
-OPENAI_API_KEY=your-api-key
+# AI 프로바이더에 맞는 키 설정
+OPENAI_API_KEY=your-openai-api-key
+CLAUDE_API_KEY=your-claude-api-key
+GEMINI_API_KEY=your-gemini-api-key
 CONFIG_PATH=../configs/config.yaml
 PORT=8080
 ENV=development
