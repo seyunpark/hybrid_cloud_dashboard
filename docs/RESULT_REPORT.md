@@ -42,13 +42,17 @@ permalink: /
 - **문서화**: CLAUDE.md, API_SPEC.md 등 7개 문서 작성 및 현행화
 - **Git 관리**: Conventional Commits 형식 커밋, .gitignore 이슈 해결
 
-### 2.2 시스템에 내장된 AI 기능
+### 2.2 외부 AI API 연동 (API Key 필수)
 
-| AI Provider | 모델 | 시스템 내 용도 |
-|-------------|------|---------------|
-| **OpenAI** | GPT-4, GPT-4 Turbo, GPT-3.5 Turbo | K8s Manifest 자동 생성 |
-| **Anthropic Claude** | Claude 3 Opus/Sonnet, Claude Sonnet 4 | K8s Manifest 자동 생성 |
-| **Google Gemini** | Gemini 2.0 Flash, Gemini 2.5 Flash/Pro | K8s Manifest 자동 생성 (기본 프로바이더) |
+시스템의 AI 매니페스트 생성 기능은 **외부 LLM API를 호출**하는 방식으로, 자체 AI 모델을 내장하고 있지 않습니다. 사용하려면 아래 프로바이더 중 하나의 **API Key를 등록**해야 하며, 사용 가능한 모델 목록은 API Key 등록 후 **Fetch Models** 버튼으로 실시간 조회됩니다.
+
+| AI Provider | 시스템 내 용도 | 비고 |
+|-------------|---------------|------|
+| **OpenAI** | K8s Manifest 자동 생성 | API Key 등록 후 모델 목록 실시간 조회 |
+| **Anthropic Claude** | K8s Manifest 자동 생성 | API Key 등록 후 모델 목록 실시간 조회 |
+| **Google Gemini** | K8s Manifest 자동 생성 | API Key 등록 후 모델 목록 실시간 조회 |
+
+> **참고:** API Key 미등록 시에는 AI 기능을 사용할 수 없으며, 기본 템플릿 기반 fallback으로 동작합니다.
 
 #### AI 프롬프트 엔지니어링 기법
 - **Few-shot Learning**: 과거 배포 이력에서 유사 사례 3~5개를 프롬프트에 포함

@@ -6,7 +6,7 @@ server:
   host: 0.0.0.0
   port: 8080
   read_timeout: 30s
-  write_timeout: 30s
+  write_timeout: 5m    # AI 호출 최대 5분 소요 가능
 
 # AI 설정
 ai:
