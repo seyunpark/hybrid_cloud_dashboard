@@ -243,7 +243,7 @@ K8s 배포 실행 → 이력 저장
 
 #### Step 1. 최초 실행 — Dashboard
 
-시스템 최초 실행 시 대시보드 화면입니다. 로컬 Docker 컨테이너 목록과 등록된 K8s 클러스터 개요를 확인할 수 있습니다.
+시스템 최초 실행 시 대시보드 화면입니다. 로컬 Docker 컨테이너 4개(test-frontend, test-backend, test-redis, test-db)와 기본 등록된 K8s 클러스터 개요를 확인할 수 있습니다.
 
 ![최초 실행 Dashboard](./images/01-dashboard.png)
 
@@ -251,73 +251,105 @@ K8s 배포 실행 → 이력 저장
 
 #### Step 2. 외부 클러스터 등록 (kubeconfig)
 
-Settings 페이지에서 kubeconfig 컨텍스트를 선택하여 외부 K8s 클러스터를 등록합니다.
+Settings 페이지에서 kubeconfig에 등록된 컨텍스트 목록을 확인하고, Register 버튼으로 외부 K8s 클러스터(GKE 등)를 등록합니다.
 
-![클러스터 등록](./images/02-cluster-register.png)
+![클러스터 등록](./images/02-settings-cluster.png)
 
 ---
 
 #### Step 3. AI API Key 등록
 
-AI 매니페스트 생성을 위한 API Key를 설정합니다. OpenAI, Claude, Gemini 중 사용할 프로바이더의 키를 입력합니다.
+AI 매니페스트 생성을 위한 프로바이더를 선택하고 API Key를 입력합니다. 아직 설정 전이므로 "Not configured — using template fallback" 상태가 표시됩니다.
 
-![AI API Key 등록](./images/03-ai-apikey.png)
+![AI API Key 등록](./images/03-ai-key-setup.png)
 
 ---
 
 #### Step 4. AI 모델 선택
 
-등록된 API Key를 기반으로 사용 가능한 모델 목록을 조회하고, 매니페스트 생성에 사용할 모델을 선택합니다.
+Fetch Models 버튼으로 사용 가능한 모델 목록을 API에서 조회합니다.
 
-![AI 모델 선택](./images/04-ai-model-select.png)
+![AI 모델 목록 조회](./images/04a-ai-model-list.png)
+
+모델 선택 후 Save Configuration을 클릭하면 "Connected" 상태로 전환되며, AI 매니페스트 생성이 가능해집니다.
+
+![AI 설정 완료](./images/04b-ai-config-complete.png)
 
 ---
 
-#### Step 5. Docker 컨테이너 → K8s 배포 요청
+#### Step 5. 스택 배포 요청 — Deploy Stack
 
-Docker에서 실행 중인 컨테이너를 선택하고, 배포할 대상 클러스터와 네임스페이스를 지정하여 AI 매니페스트 생성을 요청합니다.
+Deployments 페이지에서 Deploy Stack 버튼을 클릭하고, 배포할 컨테이너 4개를 선택합니다. 대상 클러스터(test-infra-gke-cluster)와 네임스페이스(good)를 지정하고, 요구사항을 입력하여 AI 매니페스트 생성을 요청합니다.
 
 ![배포 요청](./images/05-deploy-request.png)
 
 ---
 
-#### Step 6. AI 생성 Manifest 리뷰
+#### Step 6. AI 매니페스트 생성 중
 
-AI가 생성한 K8s Manifest(Deployment, Service, ConfigMap 등)를 리뷰합니다. 필요 시 피드백을 입력하여 수정(Refine)할 수 있습니다.
+3단계 스텝퍼(K8s 매니페스트 변환 → 매니페스트 확인 & 피드백 → 배포 실행)의 첫 번째 단계에서 AI가 컨테이너 정보를 분석하고 최적의 K8s 매니페스트를 생성합니다.
 
-![Manifest 리뷰](./images/06-manifest-review.png)
-
----
-
-#### Step 7. K8s 클러스터에 배포 실행
-
-리뷰 완료 후 배포를 실행합니다. 실시간으로 배포 진행 상태가 표시됩니다.
-
-![배포 실행](./images/07-deploy-execute.png)
+![매니페스트 생성 중](./images/06-manifest-generating.png)
 
 ---
 
-#### Step 8. 배포 완료 확인
+#### Step 7. AI 생성 Manifest 리뷰
 
-배포가 완료되면 K8s 클러스터에서 실제 리소스가 생성된 것을 확인합니다.
+AI가 생성한 스택 매니페스트를 리뷰합니다. 서비스 토폴로지, 배포 순서, 각 서비스별 Deployment/Service/ConfigMap 등의 YAML을 탭으로 전환하며 확인할 수 있습니다. AI Confidence 96%로 높은 신뢰도를 보여줍니다.
+
+![Manifest 리뷰](./images/07-manifest-review.png)
+
+---
+
+#### Step 8. 배포 완료
+
+Approve & Deploy Stack 버튼으로 배포를 실행하면, Namespace 생성부터 각 서비스(test-db → test-redis → test-backend → test-frontend)가 순서대로 배포됩니다. 100% 완료 후 배포 요약 정보가 표시됩니다.
 
 ![배포 완료](./images/08-deploy-complete.png)
 
 ---
 
-#### Step 9. 기존 배포 중단 (Undeploy)
+#### Step 9. 실제 K8s 리소스 확인
 
-배포된 리소스를 K8s 클러스터에서 제거(Undeploy)합니다. 매니페스트와 이력은 보존됩니다.
+k9s로 실제 클러스터의 good 네임스페이스를 확인하면, 4개의 Pod가 생성된 것을 볼 수 있습니다.
 
-![배포 중단](./images/09-undeploy.png)
+![k9s 리소스 확인](./images/09-k9s-verify.png)
 
 ---
 
-#### Step 10. 다른 클러스터에 재배포
+#### Step 10. 기존 배포 중단 (Undeploy)
 
-중단된 배포를 다른 K8s 클러스터를 선택하여 재배포(Redeploy)합니다.
+배포 중지 버튼을 클릭하면 확인 다이얼로그가 표시됩니다. 확인 시 K8s에 배포된 리소스가 삭제되며, 매니페스트와 이력은 보존됩니다.
 
-![다른 클러스터에 재배포](./images/10-redeploy-other-cluster.png)
+![Undeploy 확인](./images/10a-undeploy-confirm.png)
+
+Undeploy 완료 후 상태가 "undeployed"로 변경됩니다. 이 상태에서 매니페스트 수정(Refine)이나 재배포가 가능합니다.
+
+![Undeploy 완료](./images/10b-undeploy-complete.png)
+
+---
+
+#### Step 11. 매니페스트 수정 (Refine)
+
+Undeploy된 상태에서 수정 요청 버튼을 클릭하여 AI에게 매니페스트 수정을 요청할 수 있습니다.
+
+![수정 요청 화면](./images/11a-refine-view.png)
+
+자연어로 수정 사항을 입력합니다. 예: "프론트의 서비스 타입을 그냥 클러스터 IP로만 바꿔줘"
+
+![수정 요청 입력](./images/11b-refine-input.png)
+
+AI가 피드백을 반영하여 매니페스트를 수정합니다. test-frontend의 Service type이 LoadBalancer에서 ClusterIP로 변경된 것을 확인할 수 있습니다.
+
+![수정 결과](./images/11c-refine-result.png)
+
+---
+
+#### Step 12. 다른 클러스터에 재배포
+
+수정된 매니페스트를 다른 K8s 클러스터를 선택하여 재배포할 수 있습니다. 매니페스트에 설정된 네임스페이스로 배포됩니다.
+
+![재배포 클러스터 선택](./images/12-redeploy-cluster.png)
 
 ---
 
