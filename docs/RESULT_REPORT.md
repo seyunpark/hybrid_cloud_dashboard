@@ -61,6 +61,7 @@ permalink: /
 ## 3. 기술 스택
 
 ### 3.1 Backend
+
 | 기술 | 버전 | 용도 |
 |------|------|------|
 | Go | 1.25 | 백엔드 서버 |
@@ -71,6 +72,7 @@ permalink: /
 | SQLite (go-sqlite3) | v1.14 | 배포 이력/설정 저장 |
 
 ### 3.2 Frontend
+
 | 기술 | 버전 | 용도 |
 |------|------|------|
 | React | 19.2 | UI 라이브러리 |
@@ -82,6 +84,7 @@ permalink: /
 | React Router | 7.x | 라우팅 |
 
 ### 3.3 AI
+
 | 기술 | 용도 |
 |------|------|
 | OpenAI API | LLM 기반 Manifest 생성 |
