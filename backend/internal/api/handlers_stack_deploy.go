@@ -978,9 +978,9 @@ func (s *Server) handleUndeployStack(c *gin.Context) {
 		}
 	}
 
-	if currentStatus != "deployed" && currentStatus != "completed" {
+	if currentStatus != "deployed" && currentStatus != "completed" && currentStatus != "failed" {
 		c.JSON(http.StatusConflict, models.ErrorResponse{
-			Error: models.ErrorDetail{Code: "INVALID_STATUS", Message: fmt.Sprintf("배포 중지는 deployed 상태에서만 가능합니다 (현재: %s)", currentStatus)},
+			Error: models.ErrorDetail{Code: "INVALID_STATUS", Message: fmt.Sprintf("배포 중지는 deployed/failed 상태에서만 가능합니다 (현재: %s)", currentStatus)},
 		})
 		return
 	}
@@ -1251,7 +1251,7 @@ kind: Namespace
 metadata:
   name: %s
   labels:
-    app.kubernetes.io/managed-by: hybrid-cloud-dashboard
+    app.kubernetes.io/managed-by: vineyard
     stack: %s`, namespace, stackName)
 
 	if result.Manifests == nil {
@@ -1540,4 +1540,439 @@ func (s *Server) executeStackDeployAsync(deployID string) {
 	s.updateStackDeployInDB(ctx, state)
 
 	slog.Info("stack deployment finished", "deploy_id", deployID, "status", state.Status.Status)
+
+	// Auto-recovery: on failure, undeploy → refine with error logs → set pending
+	const maxAutoRetry = 2
+	if deployFailed && state.Status.AutoRetryCount < maxAutoRetry {
+		slog.Info("auto-recovery triggered", "deploy_id", deployID, "retry_count", state.Status.AutoRetryCount+1)
+		s.autoRecoverStackDeploy(ctx, deployID, state)
+	}
+}
+
+// autoRecoverStackDeploy handles automatic recovery on deploy failure:
+// 1. Collect error messages from failed steps
+// 2. Undeploy (cleanup K8s resources)
+// 3. Refine manifest with error logs as feedback
+// 4. Reset status to "pending" so user can review and redeploy
+func (s *Server) autoRecoverStackDeploy(ctx context.Context, deployID string, state *stackDeployState) {
+	// 1. Collect error messages from failed/skipped steps
+	var errors []string
+	s.mu.RLock()
+	for _, svcName := range state.Status.DeployOrder {
+		svcStatus, ok := state.Status.Services[svcName]
+		if !ok {
+			continue
+		}
+		for _, step := range svcStatus.Steps {
+			if step.Status == "failed" {
+				errors = append(errors, fmt.Sprintf("[%s] %s: %s", svcName, step.Step, step.Message))
+			}
+		}
+	}
+	clusterName := ""
+	namespace := ""
+	if state.Request != nil {
+		clusterName = state.Request.ClusterName
+		namespace = state.Request.Namespace
+	}
+	var manifests map[string]map[string]string
+	if state.Manifests != nil {
+		manifests = state.Manifests.Manifests
+	}
+	deployOrder := state.Status.DeployOrder
+	s.mu.RUnlock()
+
+	if len(errors) == 0 {
+		slog.Warn("auto-recovery: no error messages found, skipping", "deploy_id", deployID)
+		return
+	}
+
+	// Set status to recovering so UI can show progress
+	s.mu.Lock()
+	state.Status.Status = "recovering"
+	state.Response.Status = "recovering"
+	state.Status.CompletedAt = nil
+	s.mu.Unlock()
+	s.updateStackDeployInDB(ctx, state)
+
+	// 2. Undeploy — cleanup K8s resources (best-effort, reverse order)
+	slog.Info("auto-recovery: undeploying failed resources", "deploy_id", deployID)
+	s.cleanupK8sResources(ctx, clusterName, namespace, deployOrder, manifests)
+
+	// 3. Refine manifest with error feedback
+	feedback := "배포 실패로 자동 수정 요청합니다. 아래 에러를 분석하고 매니페스트를 수정해주세요:\n\n" + strings.Join(errors, "\n")
+	slog.Info("auto-recovery: refining manifest", "deploy_id", deployID, "feedback_length", len(feedback))
+
+	// Reconstruct Manifests if nil
+	if state.Manifests == nil && state.Response != nil && state.Response.Manifests != nil {
+		s.mu.Lock()
+		state.Manifests = &ai.StackManifestResult{
+			Manifests:  map[string]map[string]string(state.Response.Manifests),
+			Reasoning:  state.Response.Reasoning,
+			Confidence: state.Response.Confidence,
+		}
+		if state.Response.Topology != nil {
+			state.Manifests.Topology = *state.Response.Topology
+		}
+		s.mu.Unlock()
+	}
+
+	refined, err := s.ai.RefineStackManifest(ctx, state.Manifests, feedback)
+	if err != nil {
+		slog.Error("auto-recovery: refine failed, reverting to failed status", "deploy_id", deployID, "error", err)
+		s.mu.Lock()
+		state.Status.Status = "failed"
+		state.Response.Status = "failed"
+		now := time.Now()
+		state.Status.CompletedAt = &now
+		s.mu.Unlock()
+		s.updateStackDeployInDB(ctx, state)
+		return
+	}
+
+	// Re-inject Namespace manifest if needed
+	if state.Request != nil && state.Request.CreateNamespace {
+		injectNamespaceManifest(refined, state.Request.Namespace, state.Status.StackName)
+	}
+
+	// 4. Update state to pending with refined manifests
+	s.mu.Lock()
+	state.Status.AutoRetryCount++
+	state.Manifests = refined
+	state.Response.Topology = &refined.Topology
+	state.Response.Manifests = models.StackManifests(refined.Manifests)
+	state.Response.Reasoning = "[자동 수정] " + refined.Reasoning
+	state.Response.Confidence = refined.Confidence
+	state.Response.Status = "pending"
+	state.Status.Status = "pending"
+	state.Status.CompletedAt = nil
+	state.Status.DeployOrder = refined.Topology.DeployOrder
+
+	// Reset service statuses
+	svcStatuses := make(map[string]*models.ServiceDeployStatus)
+	for _, svcName := range refined.Topology.DeployOrder {
+		svcStatuses[svcName] = &models.ServiceDeployStatus{
+			ServiceName: svcName,
+			Status:      "pending",
+			Steps:       []models.DeployStep{},
+		}
+	}
+	state.Status.Services = svcStatuses
+	s.mu.Unlock()
+
+	s.updateStackDeployInDB(ctx, state)
+	slog.Info("auto-recovery: manifest refined, status reset to pending", "deploy_id", deployID, "retry_count", state.Status.AutoRetryCount)
+}
+
+// cleanupK8sResources removes K8s resources for a stack deployment (best-effort).
+func (s *Server) cleanupK8sResources(ctx context.Context, clusterName, namespace string, deployOrder []string, manifests map[string]map[string]string) {
+	deleteKindOrder := []string{
+		"HorizontalPodAutoscaler", "HPA",
+		"Ingress", "HTTPRoute", "Gateway",
+		"Service",
+		"Deployment", "StatefulSet",
+		"Secret", "ConfigMap",
+		"PersistentVolumeClaim",
+	}
+
+	for i := len(deployOrder) - 1; i >= 0; i-- {
+		svcName := deployOrder[i]
+		if svcName == "_namespace" {
+			continue
+		}
+		if manifests != nil {
+			deletedKinds := map[string]bool{}
+			for _, kind := range deleteKindOrder {
+				resources, ok := manifests[kind]
+				if !ok {
+					continue
+				}
+				deletedKinds[kind] = true
+				for resName := range resources {
+					if resName == svcName || strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
+						if err := s.kubernetes.DeleteResource(ctx, clusterName, kind, namespace, resName); err != nil {
+							slog.Warn("auto-recovery cleanup: failed to delete", "kind", kind, "name", resName, "error", err)
+						}
+					}
+				}
+			}
+			for kind, resources := range manifests {
+				if kind == "Namespace" || deletedKinds[kind] {
+					continue
+				}
+				for resName := range resources {
+					if resName == svcName || strings.HasPrefix(resName, svcName+"-") || strings.HasSuffix(resName, "-"+svcName) {
+						if err := s.kubernetes.DeleteResource(ctx, clusterName, kind, namespace, resName); err != nil {
+							slog.Warn("auto-recovery cleanup: failed to delete", "kind", kind, "name", resName, "error", err)
+						}
+					}
+				}
+			}
+		} else {
+			s.kubernetes.DeleteResource(ctx, clusterName, "Deployment", namespace, svcName)
+			s.kubernetes.DeleteResource(ctx, clusterName, "Service", namespace, svcName)
+		}
+	}
+}
+
+// StackPodInfo represents a pod's status for the stack deploy detail page.
+type StackPodInfo struct {
+	ServiceName  string `json:"service_name"`
+	PodName      string `json:"pod_name"`
+	Status       string `json:"status"`
+	Ready        bool   `json:"ready"`
+	RestartCount int    `json:"restart_count"`
+}
+
+// handleGetStackPodStatus returns live pod statuses for a deployed stack.
+func (s *Server) handleGetStackPodStatus(c *gin.Context) {
+	deployID := c.Param("deploy_id")
+	ctx := c.Request.Context()
+
+	var clusterName, namespace string
+	var deployOrder []string
+
+	s.mu.RLock()
+	state, inMemory := s.stackDeployStates[deployID]
+	s.mu.RUnlock()
+
+	if inMemory {
+		if state.Request != nil {
+			clusterName = state.Request.ClusterName
+			namespace = state.Request.Namespace
+		}
+		deployOrder = state.Status.DeployOrder
+	} else {
+		record, err := s.data.GetStackDeploy(ctx, deployID)
+		if err != nil || record == nil {
+			c.JSON(http.StatusNotFound, models.ErrorResponse{
+				Error: models.ErrorDetail{Code: "DEPLOY_NOT_FOUND", Message: "stack deployment not found"},
+			})
+			return
+		}
+		clusterName = record.ClusterName
+		namespace = record.Namespace
+		deployOrder = record.DeployOrder
+	}
+
+	var pods []StackPodInfo
+	for _, svcName := range deployOrder {
+		if svcName == "_namespace" {
+			continue
+		}
+		k8sPods, err := s.kubernetes.ListPods(ctx, clusterName, namespace, fmt.Sprintf("app=%s", svcName))
+		if err != nil {
+			slog.Warn("failed to list pods for service", "service", svcName, "error", err)
+			continue
+		}
+		for _, p := range k8sPods {
+			ready := true
+			restarts := 0
+			for _, cont := range p.Containers {
+				if !cont.Ready {
+					ready = false
+				}
+				restarts += cont.RestartCount
+			}
+			pods = append(pods, StackPodInfo{
+				ServiceName:  svcName,
+				PodName:      p.Name,
+				Status:       p.Status,
+				Ready:        ready,
+				RestartCount: restarts,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"pods": pods})
+}
+
+// handleDiagnoseStack collects logs/events from unhealthy pods,
+// sends them to AI for manifest refinement, then sets status to pending.
+func (s *Server) handleDiagnoseStack(c *gin.Context) {
+	deployID := c.Param("deploy_id")
+	ctx := c.Request.Context()
+
+	s.mu.RLock()
+	state, exists := s.stackDeployStates[deployID]
+	s.mu.RUnlock()
+
+	// Fallback: restore from DB if not in memory
+	if !exists {
+		record, err := s.data.GetStackDeploy(ctx, deployID)
+		if err != nil || record == nil {
+			c.JSON(http.StatusNotFound, models.ErrorResponse{
+				Error: models.ErrorDetail{Code: "DEPLOY_NOT_FOUND", Message: "stack deployment not found"},
+			})
+			return
+		}
+		s.RestoreStackDeploy(record)
+		s.mu.RLock()
+		state = s.stackDeployStates[deployID]
+		s.mu.RUnlock()
+	}
+
+	currentStatus := state.Status.Status
+	if currentStatus != "deployed" && currentStatus != "completed" && currentStatus != "failed" {
+		c.JSON(http.StatusConflict, models.ErrorResponse{
+			Error: models.ErrorDetail{Code: "INVALID_STATUS", Message: fmt.Sprintf("진단은 deployed/failed 상태에서만 가능합니다 (현재: %s)", currentStatus)},
+		})
+		return
+	}
+
+	clusterName := ""
+	namespace := ""
+	if state.Request != nil {
+		clusterName = state.Request.ClusterName
+		namespace = state.Request.Namespace
+	}
+
+	// Collect diagnostics from unhealthy pods
+	var diagnostics []string
+	for _, svcName := range state.Status.DeployOrder {
+		if svcName == "_namespace" {
+			continue
+		}
+		k8sPods, err := s.kubernetes.ListPods(ctx, clusterName, namespace, fmt.Sprintf("app=%s", svcName))
+		if err != nil {
+			continue
+		}
+		for _, p := range k8sPods {
+			healthy := p.Status == "Running"
+			for _, cont := range p.Containers {
+				if !cont.Ready {
+					healthy = false
+				}
+			}
+			if healthy {
+				continue
+			}
+
+			// Collect logs
+			logs, err := s.kubernetes.GetPodLogs(ctx, clusterName, namespace, p.Name, 30)
+			if err != nil {
+				logs = fmt.Sprintf("(로그 조회 실패: %v)", err)
+			}
+
+			// Collect events
+			events, err := s.kubernetes.GetPodEvents(ctx, clusterName, namespace, p.Name)
+			if err != nil {
+				events = []string{fmt.Sprintf("(이벤트 조회 실패: %v)", err)}
+			}
+
+			diag := fmt.Sprintf("## 서비스: %s (Pod: %s, Status: %s)\n### Events:\n%s\n### Logs (last 30 lines):\n%s",
+				svcName, p.Name, p.Status,
+				strings.Join(events, "\n"),
+				logs,
+			)
+			diagnostics = append(diagnostics, diag)
+		}
+	}
+
+	if len(diagnostics) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "모든 Pod가 정상 상태입니다", "healthy": true})
+		return
+	}
+
+	// Set recovering status immediately
+	s.mu.Lock()
+	state.Status.Status = "recovering"
+	state.Response.Status = "recovering"
+	state.Status.CompletedAt = nil
+	s.mu.Unlock()
+	s.updateStackDeployInDB(ctx, state)
+
+	// Return immediately so UI can show "recovering" status
+	c.JSON(http.StatusOK, gin.H{"status": "recovering", "message": "자동 수정을 진행 중입니다"})
+
+	// Run the rest asynchronously
+	go s.runDiagnoseAsync(deployID, diagnostics)
+}
+
+// runDiagnoseAsync performs undeploy → AI refine → set pending in the background.
+func (s *Server) runDiagnoseAsync(deployID string, diagnostics []string) {
+	ctx := context.Background()
+
+	s.mu.RLock()
+	state, exists := s.stackDeployStates[deployID]
+	s.mu.RUnlock()
+	if !exists {
+		return
+	}
+
+	clusterName := ""
+	namespace := ""
+	if state.Request != nil {
+		clusterName = state.Request.ClusterName
+		namespace = state.Request.Namespace
+	}
+
+	// Undeploy existing resources
+	var manifests map[string]map[string]string
+	if state.Manifests != nil {
+		manifests = state.Manifests.Manifests
+	}
+	s.cleanupK8sResources(ctx, clusterName, namespace, state.Status.DeployOrder, manifests)
+
+	// Build feedback from diagnostics
+	feedback := "배포된 Pod에서 문제가 발생했습니다. 아래 진단 정보를 분석하고 매니페스트를 수정해주세요:\n\n" + strings.Join(diagnostics, "\n\n---\n\n")
+
+	// Reconstruct Manifests if nil
+	if state.Manifests == nil && state.Response != nil && state.Response.Manifests != nil {
+		s.mu.Lock()
+		state.Manifests = &ai.StackManifestResult{
+			Manifests:  map[string]map[string]string(state.Response.Manifests),
+			Reasoning:  state.Response.Reasoning,
+			Confidence: state.Response.Confidence,
+		}
+		if state.Response.Topology != nil {
+			state.Manifests.Topology = *state.Response.Topology
+		}
+		s.mu.Unlock()
+	}
+
+	refined, err := s.ai.RefineStackManifest(ctx, state.Manifests, feedback)
+	if err != nil {
+		slog.Error("diagnose: refine failed", "deploy_id", deployID, "error", err)
+		s.mu.Lock()
+		state.Status.Status = "failed"
+		state.Response.Status = "failed"
+		now := time.Now()
+		state.Status.CompletedAt = &now
+		s.mu.Unlock()
+		s.updateStackDeployInDB(ctx, state)
+		return
+	}
+
+	// Re-inject Namespace manifest if needed
+	if state.Request != nil && state.Request.CreateNamespace {
+		injectNamespaceManifest(refined, state.Request.Namespace, state.Status.StackName)
+	}
+
+	// Update state to pending
+	s.mu.Lock()
+	state.Status.AutoRetryCount++
+	state.Manifests = refined
+	state.Response.Topology = &refined.Topology
+	state.Response.Manifests = models.StackManifests(refined.Manifests)
+	state.Response.Reasoning = "[자동 수정] " + refined.Reasoning
+	state.Response.Confidence = refined.Confidence
+	state.Response.Status = "pending"
+	state.Status.Status = "pending"
+	state.Status.CompletedAt = nil
+	state.Status.DeployOrder = refined.Topology.DeployOrder
+
+	svcStatuses := make(map[string]*models.ServiceDeployStatus)
+	for _, svcName := range refined.Topology.DeployOrder {
+		svcStatuses[svcName] = &models.ServiceDeployStatus{
+			ServiceName: svcName,
+			Status:      "pending",
+			Steps:       []models.DeployStep{},
+		}
+	}
+	state.Status.Services = svcStatuses
+	s.mu.Unlock()
+
+	s.updateStackDeployInDB(ctx, state)
+	slog.Info("diagnose: manifest refined, status reset to pending", "deploy_id", deployID)
 }

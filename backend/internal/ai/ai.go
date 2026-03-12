@@ -274,8 +274,9 @@ func buildSystemPrompt() string {
 manifest 생성 요구사항:
 - 반드시 resource requests와 limits 포함
 - 반드시 liveness/readiness probe 포함
-- 반드시 SecurityContext 포함 (runAsNonRoot, readOnlyRootFilesystem 등 가능한 경우)
-- 서비스 유형은 용도에 맞게 설정 (내부: ClusterIP, 외부: LoadBalancer)
+- PVC/Volume 마운트 시 해당 이미지의 공식 권장 데이터 디렉토리 구조를 따를 것 (예: 서브디렉토리 필요 여부, 환경변수로 데이터 경로 지정 등)
+- Docker에서 named volume이나 bind mount로 사용하던 경로는 K8s에서 PVC 또는 emptyDir로 적절히 변환
+- 서비스 유형은 용도에 맞게 설정 (내부: ClusterIP, 외부: NodePort). NodePort 사용 시 nodePort 번호를 지정하지 말 것 (K8s가 자동 할당)
 - 서비스 타입에 따라 적절한 replica 수 설정
 
 중요: reasoning 필드는 반드시 한국어로 작성하세요.`
@@ -1031,9 +1032,13 @@ manifests 규칙:
 - 컨테이너의 환경변수(DB_HOST, REDIS_URL, API_URL 등), 포트, 이미지 이름을 분석하여 제공된 서비스 간 연결을 자동 감지
 - 연결된 서비스 간에는 K8s DNS 사용: <service-name>.<namespace>.svc.cluster.local
 - deploy_order에는 제공된 컨테이너에 대응하는 서비스만 포함 (의존성 순서 기반)
-- 각 Deployment에 resource requests/limits, liveness/readiness probe, SecurityContext 포함
+- 컨테이너에 Command가 있으면 Deployment의 spec.containers[].command에 반드시 포함
+- 각 Deployment에 resource requests/limits, liveness/readiness probe 포함
+- PVC/Volume 마운트 시 해당 이미지의 공식 권장 데이터 디렉토리 구조를 따를 것 (예: 서브디렉토리 필요 여부, 환경변수로 데이터 경로 지정 등)
+- Docker에서 named volume이나 bind mount로 사용하던 경로는 K8s에서 PVC 또는 emptyDir로 적절히 변환
+- Docker Compose의 depends_on, networks, links 등은 K8s Service DNS와 readiness probe로 대체
 - Deployment에서 환경변수는 ConfigMap/Secret을 envFrom 또는 valueFrom으로 참조
-- DB 서비스는 ClusterIP, 프론트엔드는 LoadBalancer, 백엔드는 ClusterIP
+- DB 서비스는 ClusterIP, 프론트엔드는 NodePort, 백엔드는 ClusterIP. NodePort 사용 시 nodePort 번호를 지정하지 말 것 (K8s가 자동 할당)
 - 환경변수에서 다른 서비스를 참조하는 값은 K8s DNS로 치환
 
 중요: reasoning 필드는 반드시 한국어로 작성하세요.`
@@ -1093,6 +1098,9 @@ func buildStackUserPrompt(info StackContainerInfo, history []models.DeploymentHi
 		}
 		if len(c.Volumes) > 0 {
 			fmt.Fprintf(&b, "- Volumes: %s\n", strings.Join(c.Volumes, ", "))
+		}
+		if len(c.Command) > 0 {
+			fmt.Fprintf(&b, "- Command: %s\n", strings.Join(c.Command, " "))
 		}
 		b.WriteString("\n")
 	}
@@ -1380,7 +1388,7 @@ spec:
 
 		k8sSvcType := "ClusterIP"
 		if svcType == "web-server" || svcType == "web-application" {
-			k8sSvcType = "LoadBalancer"
+			k8sSvcType = "NodePort"
 		}
 
 		manifests["Service"][name] = fmt.Sprintf(`apiVersion: v1

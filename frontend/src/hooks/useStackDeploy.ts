@@ -10,6 +10,7 @@ export function useStackDeployDetail(deployId: string | undefined) {
       const status = query.state.data?.status?.status;
       if (status === 'generating') return 2000;
       if (status === 'deploying') return 2000;
+      if (status === 'recovering') return 2000;
       if (status === 'pending' || status === 'analyzing') return 5000;
       return false;
     },

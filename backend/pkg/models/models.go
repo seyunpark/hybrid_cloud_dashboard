@@ -351,13 +351,14 @@ type ServiceDeployStatus struct {
 
 // StackDeployStatus tracks per-service deployment progress.
 type StackDeployStatus struct {
-	DeployID    string                         `json:"deploy_id"`
-	Status      string                         `json:"status"`
-	StackName   string                         `json:"stack_name"`
-	StartedAt   *time.Time                     `json:"started_at,omitempty"`
-	CompletedAt *time.Time                     `json:"completed_at,omitempty"`
-	Services    map[string]*ServiceDeployStatus `json:"services"`
-	DeployOrder []string                       `json:"deploy_order"`
+	DeployID       string                         `json:"deploy_id"`
+	Status         string                         `json:"status"`
+	StackName      string                         `json:"stack_name"`
+	StartedAt      *time.Time                     `json:"started_at,omitempty"`
+	CompletedAt    *time.Time                     `json:"completed_at,omitempty"`
+	Services       map[string]*ServiceDeployStatus `json:"services"`
+	DeployOrder    []string                       `json:"deploy_order"`
+	AutoRetryCount int                            `json:"auto_retry_count"`
 }
 
 // StackExecuteRequest is the request for executing a stack deployment.

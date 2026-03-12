@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Grape cluster -->
+  <circle cx="24" cy="22" r="7" fill="#7c3aed"/>
+  <circle cx="38" cy="22" r="7" fill="#6d28d9"/>
+  <circle cx="31" cy="18" r="7" fill="#8b5cf6"/>
+  <circle cx="17" cy="33" r="7" fill="#6d28d9"/>
+  <circle cx="31" cy="33" r="7" fill="#7c3aed"/>
+  <circle cx="45" cy="33" r="7" fill="#8b5cf6"/>
+  <circle cx="24" cy="43" r="7" fill="#8b5cf6"/>
+  <circle cx="38" cy="43" r="7" fill="#7c3aed"/>
+  <circle cx="31" cy="51" r="7" fill="#6d28d9"/>
+  <!-- Stem -->
+  <path d="M31 11 Q31 4 37 2" stroke="#16a34a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <!-- Leaf -->
+  <path d="M37 2 Q44 0 42 7 Q40 4 37 2Z" fill="#22c55e"/>
+</svg>

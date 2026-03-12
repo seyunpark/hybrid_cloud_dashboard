@@ -213,11 +213,38 @@ export function StackManifestPreview({
         </div>
       )}
 
-      {/* AI Reasoning */}
+      {/* AI Reasoning (collapsible) */}
       {reasoning && !reasoning.startsWith('[Fallback]') && (
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-          <p className="text-xs text-gray-700">{reasoning}</p>
-        </div>
+        <details className="rounded-lg border border-gray-200 bg-gray-50">
+          <summary className="cursor-pointer select-none px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide hover:text-gray-700">
+            AI 분석
+          </summary>
+          <div className="space-y-1.5 border-t border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-700">
+            {reasoning.split('\n').filter(line => line.trim()).map((line, i) => {
+              const trimmed = line.trim();
+              if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+                return (
+                  <div key={i} className="flex gap-2 pl-2">
+                    <span className="shrink-0 text-gray-400">•</span>
+                    <span>{trimmed.slice(2)}</span>
+                  </div>
+                );
+              }
+              if (/^\d+\./.test(trimmed)) {
+                return (
+                  <div key={i} className="flex gap-2 pl-2">
+                    <span className="shrink-0 font-medium text-gray-500">{trimmed.match(/^\d+\./)![0]}</span>
+                    <span>{trimmed.replace(/^\d+\.\s*/, '')}</span>
+                  </div>
+                );
+              }
+              if (trimmed.startsWith('#') || trimmed.startsWith('[자동 수정]')) {
+                return <p key={i} className="font-semibold text-gray-800">{trimmed.replace(/^#+\s*/, '')}</p>;
+              }
+              return <p key={i}>{trimmed}</p>;
+            })}
+          </div>
+        </details>
       )}
 
       {/* Tabbed Manifest View */}

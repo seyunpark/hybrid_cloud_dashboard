@@ -24,6 +24,7 @@ const statusStyles: Record<string, string> = {
   cancelled: 'bg-gray-100 text-gray-800',
   undeployed: 'bg-gray-100 text-gray-600',
   generating: 'bg-purple-100 text-purple-800',
+  recovering: 'bg-amber-100 text-amber-800',
 };
 
 export function StatusBadge({ status }: StatusBadgeProps) {

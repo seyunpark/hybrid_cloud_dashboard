@@ -13,7 +13,7 @@ permalink: /
 ## 1. 프로젝트 개요
 
 ### 1.1 프로젝트명
-**Hybrid Cloud Dashboard** — AI 기반 하이브리드 환경 통합 모니터링 및 지능형 배포 시스템
+**Vineyard** — AI 기반 하이브리드 환경 통합 모니터링 및 지능형 배포 시스템
 
 ### 1.2 목적
 로컬 Docker 환경과 여러 Kubernetes 클러스터(AWS EKS, Azure AKS, On-premise)를 단일 대시보드에서 통합 모니터링하고, LLM 기반으로 Docker 컨테이너를 K8s에 지능적으로 배포하는 시스템 구축

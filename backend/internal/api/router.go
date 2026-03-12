@@ -141,6 +141,8 @@ func (s *Server) setupRouter() {
 			deployGroup.POST("/stack/:deploy_id/execute", s.handleExecuteStackDeploy)
 			deployGroup.POST("/stack/:deploy_id/undeploy", s.handleUndeployStack)
 			deployGroup.POST("/stack/:deploy_id/redeploy", s.handleRedeployStack)
+			deployGroup.GET("/stack/:deploy_id/pod-status", s.handleGetStackPodStatus)
+			deployGroup.POST("/stack/:deploy_id/diagnose", s.handleDiagnoseStack)
 			deployGroup.DELETE("/stack/:deploy_id", s.handleDeleteStackDeploy)
 		}
 

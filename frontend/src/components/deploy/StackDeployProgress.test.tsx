@@ -9,6 +9,7 @@ describe('StackDeployProgress', () => {
     status: 'deploying',
     stack_name: 'my-stack',
     deploy_order: ['db', 'backend', 'frontend'],
+    auto_retry_count: 0,
     services: {
       db: {
         service_name: 'db',

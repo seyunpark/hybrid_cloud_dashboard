@@ -9,9 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"io"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
@@ -35,6 +38,10 @@ type Service interface {
 	RestartPod(ctx context.Context, cluster, namespace, name string) error
 	DeleteDeployment(ctx context.Context, cluster, namespace, name string) error
 	DeleteService(ctx context.Context, cluster, namespace, name string) error
+
+	// Pod diagnostics
+	GetPodLogs(ctx context.Context, cluster, namespace, podName string, tailLines int64) (string, error)
+	GetPodEvents(ctx context.Context, cluster, namespace, podName string) ([]string, error)
 
 	// Generic resource operations (dynamic client)
 	ApplyManifest(ctx context.Context, cluster string, yamlContent string) error
@@ -248,10 +255,23 @@ func (s *k8sService) ListPods(ctx context.Context, cluster, namespace, labelSele
 			})
 		}
 
+		// Derive effective status from container statuses (kubectl-style)
+		podStatus := string(p.Status.Phase)
+		for _, cs := range p.Status.ContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+				podStatus = cs.State.Waiting.Reason
+				break
+			}
+			if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" {
+				podStatus = cs.State.Terminated.Reason
+				break
+			}
+		}
+
 		result = append(result, models.Pod{
 			Name:       p.Name,
 			Namespace:  p.Namespace,
-			Status:     string(p.Status.Phase),
+			Status:     podStatus,
 			Phase:      string(p.Status.Phase),
 			Node:       p.Spec.NodeName,
 			IP:         p.Status.PodIP,
@@ -538,7 +558,7 @@ func (s *k8sService) ApplyManifest(ctx context.Context, cluster string, yamlCont
 	// Server-Side Apply (idempotent — works for both create and update)
 	obj.SetManagedFields(nil)
 	_, err = dr.Apply(ctx, obj.GetName(), obj, metav1.ApplyOptions{
-		FieldManager: "hybrid-cloud-dashboard",
+		FieldManager: "vineyard",
 		Force:        true,
 	})
 	if err != nil {
@@ -612,4 +632,42 @@ func (s *k8sService) resolveGVR(cc *clusterClient, gvk schema.GroupVersionKind) 
 
 	namespaced := mapping.Scope.Name() == meta.RESTScopeNameNamespace
 	return mapping.Resource, namespaced, nil
+}
+
+func (s *k8sService) GetPodLogs(ctx context.Context, cluster, namespace, podName string, tailLines int64) (string, error) {
+	cc, err := s.getClient(cluster)
+	if err != nil {
+		return "", err
+	}
+	req := cc.client.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+		TailLines: &tailLines,
+	})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return "", fmt.Errorf("getting logs for pod %s: %w", podName, err)
+	}
+	defer stream.Close()
+	data, err := io.ReadAll(stream)
+	if err != nil {
+		return "", fmt.Errorf("reading logs for pod %s: %w", podName, err)
+	}
+	return string(data), nil
+}
+
+func (s *k8sService) GetPodEvents(ctx context.Context, cluster, namespace, podName string) ([]string, error) {
+	cc, err := s.getClient(cluster)
+	if err != nil {
+		return nil, err
+	}
+	events, err := cc.client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", podName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("getting events for pod %s: %w", podName, err)
+	}
+	var result []string
+	for _, e := range events.Items {
+		result = append(result, fmt.Sprintf("[%s] %s: %s", e.Type, e.Reason, e.Message))
+	}
+	return result, nil
 }

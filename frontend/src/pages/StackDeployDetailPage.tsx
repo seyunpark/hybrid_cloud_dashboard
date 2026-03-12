@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { stackDeployApi } from '@/api/client';
 import type { StackManifests } from '@/api/types';
 import { StatusBadge } from '@/components/common/StatusBadge';
@@ -51,6 +51,8 @@ function getActiveStep(status: string): number {
     case 'analyzing':
       return 2;
     case 'deploying':
+      return 3;
+    case 'recovering':
       return 3;
     case 'deployed':
     case 'completed':
@@ -234,7 +236,23 @@ export function StackDeployDetailPage() {
   const isActionable = deployStatus === 'pending' || deployStatus === 'analyzing';
   const isDeploying = deployStatus === 'deploying';
   const isDone = ['deployed', 'completed', 'failed', 'cancelled', 'undeployed'].includes(deployStatus);
-  const anyMutationPending = undeployMutation.isPending || redeployMutation.isPending || deleteMutation.isPending || reopenMutation.isPending;
+  const showPodStatus = ['deployed', 'completed', 'failed'].includes(deployStatus);
+
+  const { data: podStatusData } = useQuery({
+    queryKey: ['deploy', 'stack', deployId, 'pod-status'],
+    queryFn: () => stackDeployApi.getStackPodStatus(deployId!),
+    enabled: !!deployId && showPodStatus,
+    refetchInterval: showPodStatus ? 5000 : false,
+  });
+
+  const diagnoseMutation = useMutation({
+    mutationFn: () => stackDeployApi.diagnoseStack(deployId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deploy', 'stack', deployId] });
+    },
+  });
+
+  const anyMutationPending = undeployMutation.isPending || redeployMutation.isPending || deleteMutation.isPending || reopenMutation.isPending || diagnoseMutation.isPending;
 
   // --- Handlers ---
 
@@ -321,11 +339,23 @@ export function StackDeployDetailPage() {
         </div>
       )}
 
+      {/* Phase: Auto-recovering */}
+      {status.status === 'recovering' && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-8 text-center">
+          <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-4 border-amber-500 border-t-transparent" />
+          <p className="text-base font-semibold text-amber-800">배포 실패 — 자동 수정 중...</p>
+          <p className="mt-2 text-sm text-amber-600">
+            배포된 리소스를 정리하고, AI가 에러를 분석하여 매니페스트를 수정하고 있습니다.
+          </p>
+          <p className="mt-1 text-xs text-amber-400">수정 완료 후 매니페스트를 확인할 수 있습니다.</p>
+        </div>
+      )}
+
       {/* Manifest Preview Card */}
       {hasManifests && status.status !== 'cancelled' && (
         <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
-          {/* Download */}
-          <div className="mb-4 flex justify-end">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-900">매니페스트</h3>
             <button
               onClick={() => downloadManifests(response.stack_name, response.manifests!)}
               className="flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
@@ -337,8 +367,20 @@ export function StackDeployDetailPage() {
             </button>
           </div>
 
+          {/* Auto-recovery notice */}
+          {isActionable && !pendingAction && (data?.status?.auto_retry_count ?? 0) > 0 && (
+            <div className="mb-4 rounded-md bg-blue-50 border border-blue-200 px-4 py-3">
+              <p className="text-sm font-medium text-blue-800">
+                배포 실패 후 AI가 매니페스트를 자동 수정했습니다 (수정 {data?.status?.auto_retry_count}회)
+              </p>
+              <p className="text-xs text-blue-600 mt-1">
+                수정된 매니페스트를 검토한 후 재배포를 진행해주세요.
+              </p>
+            </div>
+          )}
+
           {/* Review hint */}
-          {isActionable && !pendingAction && (
+          {isActionable && !pendingAction && (data?.status?.auto_retry_count ?? 0) === 0 && (
             <div className="mb-4 rounded-md bg-amber-50 border border-amber-200 px-4 py-3">
               <p className="text-sm font-medium text-amber-800">생성된 매니페스트를 확인하세요</p>
               <p className="text-xs text-amber-600 mt-1">
@@ -377,6 +419,7 @@ export function StackDeployDetailPage() {
       {/* Deploy Progress */}
       {(isDeploying || isDone) && status.status !== 'cancelled' && status.status !== 'undeployed' && (
         <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+          <h3 className="mb-4 text-sm font-semibold text-gray-900">배포 상태</h3>
           <StackDeployProgress status={status} />
 
           {/* Success */}
@@ -509,9 +552,20 @@ export function StackDeployDetailPage() {
               </>
             )}
 
-            {/* Failed → Redeploy / Delete */}
+            {/* Failed → Undeploy / Redeploy / Delete */}
             {deployStatus === 'failed' && (
               <>
+                <button
+                  onClick={() => {
+                    if (window.confirm('배포된 리소스를 삭제하시겠습니까? K8s에 생성된 리소스가 정리됩니다.')) {
+                      undeployMutation.mutate();
+                    }
+                  }}
+                  disabled={anyMutationPending}
+                  className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                >
+                  {undeployMutation.isPending ? '배포 삭제 중...' : '배포 삭제'}
+                </button>
                 {response.manifests && (
                   <button
                     onClick={() => setPendingAction('redeploy')}
@@ -557,6 +611,59 @@ export function StackDeployDetailPage() {
               배포된 상태에서는 먼저 배포를 중지해야 합니다. 배포 중지 후 재배포 또는 삭제가 가능합니다.
             </p>
           )}
+        </div>
+      )}
+
+      {/* Live Pod Status */}
+      {showPodStatus && podStatusData?.pods && podStatusData.pods.length > 0 && (
+        <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-900">Pod 상태</h3>
+            {podStatusData.pods.some(p => !p.ready) && (
+              <button
+                onClick={() => {
+                  if (window.confirm('비정상 Pod의 로그와 이벤트를 수집하여 AI가 매니페스트를 자동 수정합니다. 기존 배포는 삭제됩니다. 진행하시겠습니까?')) {
+                    diagnoseMutation.mutate();
+                  }
+                }}
+                disabled={anyMutationPending}
+                className="rounded-md bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+              >
+                {diagnoseMutation.isPending ? '수정 중...' : '자동 수정 요청'}
+              </button>
+            )}
+          </div>
+          {diagnoseMutation.isError && (
+            <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {diagnoseMutation.error?.message || '자동 수정에 실패했습니다'}
+            </div>
+          )}
+          <div className="space-y-2">
+            {podStatusData.pods.map((pod) => (
+              <div
+                key={pod.pod_name}
+                className={`flex items-center justify-between rounded-md border px-4 py-2.5 ${
+                  pod.ready
+                    ? 'border-green-200 bg-green-50'
+                    : 'border-red-200 bg-red-50'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <span className={`inline-block h-2.5 w-2.5 rounded-full ${pod.ready ? 'bg-green-500' : 'bg-red-500'}`} />
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{pod.service_name}</p>
+                    <p className="text-xs text-gray-500">{pod.pod_name}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <StatusBadge status={pod.status} />
+                  {pod.restart_count > 0 && (
+                    <span className="text-xs text-red-600">재시작 {pod.restart_count}회</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

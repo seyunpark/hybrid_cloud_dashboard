@@ -356,6 +356,15 @@ export interface StackDeployStatus {
   completed_at?: string;
   services: Record<string, ServiceDeployStatus>;
   deploy_order: string[];
+  auto_retry_count: number;
+}
+
+export interface StackPodInfo {
+  service_name: string;
+  pod_name: string;
+  status: string;
+  ready: boolean;
+  restart_count: number;
 }
 
 // --- Common Response Models ---

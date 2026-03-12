@@ -18,6 +18,7 @@ import type {
   StackDeployRequest,
   StackDeployResponse,
   StackDeployStatus,
+  StackPodInfo,
   UnifiedDeployItem,
   PaginatedResponse,
 } from './types';
@@ -370,6 +371,20 @@ export const stackDeployApi = {
   getStackDeployStatus: async (deployId: string) => {
     const { data } = await apiClient.get<StackDeployStatus>(
       `/api/deploy/stack/${deployId}/status`,
+    );
+    return data;
+  },
+
+  getStackPodStatus: async (deployId: string) => {
+    const { data } = await apiClient.get<{ pods: StackPodInfo[] }>(
+      `/api/deploy/stack/${deployId}/pod-status`,
+    );
+    return data;
+  },
+
+  diagnoseStack: async (deployId: string) => {
+    const { data } = await apiClient.post<StackDeployResponse>(
+      `/api/deploy/stack/${deployId}/diagnose`,
     );
     return data;
   },
