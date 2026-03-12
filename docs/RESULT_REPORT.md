@@ -174,11 +174,11 @@ K8s 배포 실행 → 이력 저장
 | Docker | 5 | 2 | 컨테이너 CRUD + 실시간 stats/logs |
 | Kubernetes | 7 | 1 | 클러스터/Pod/Deployment/Service 관리 |
 | 단일 배포 | 9 | 1 | AI 매니페스트 생성 → 배포 라이프사이클 |
-| 스택 배포 | 11 | - | 멀티 컨테이너 스택 배포 관리 |
+| 스택 배포 | 13 | - | 멀티 컨테이너 스택 배포 + 자동 복구 |
 | 설정 | 7 | - | AI/클러스터 설정 관리 |
 | 통합 히스토리 | 1 | - | 단일+스택 배포 이력 (페이지네이션) |
 | 헬스체크 | 2 | - | 서버/의존성 상태 |
-| **합계** | **42** | **5** | **총 47 엔드포인트** |
+| **합계** | **44** | **5** | **총 49 엔드포인트** |
 
 ### 5.3 주요 기능 구현 현황
 
@@ -213,12 +213,15 @@ K8s 배포 실행 → 이력 저장
 | 기능 | 상태 | 설명 |
 |------|------|------|
 | K8s 배포 실행 | ✅ 완료 | 이미지 Push → kubectl apply 자동화 |
-| 언디플로이 (Undeploy) | ✅ 완료 | 배포된 K8s 리소스 삭제 |
+| 언디플로이 (Undeploy) | ✅ 완료 | 배포된 K8s 리소스 삭제 (실패 상태에서도 가능) |
 | 재배포 (Redeploy) | ✅ 완료 | 저장된 매니페스트로 재배포 |
 | 삭제 (Soft-delete) | ✅ 완료 | 히스토리에 "deleted"로 보존 |
 | Namespace 자동 생성 | ✅ 완료 | create_namespace 옵션 |
 | 통합 배포 히스토리 | ✅ 완료 | 단일+스택 UNION ALL, 페이지네이션 |
 | 배포 상태 실시간 스트리밍 | ✅ 완료 | WebSocket으로 진행 상태 전송 |
+| 자동 오류 복구 | ✅ 완료 | 배포 실패 시 자동 undeploy → AI 매니페스트 수정 → 재배포 대기 (최대 2회) |
+| Pod 상태 실시간 모니터링 | ✅ 완료 | 배포된 Pod의 실제 상태 5초 간격 폴링, 비정상 Pod 감지 |
+| AI 진단 및 자동 수정 | ✅ 완료 | 비정상 Pod 로그/이벤트 수집 → AI 매니페스트 자동 수정 (비동기) |
 
 #### 설정 관리
 
@@ -390,6 +393,18 @@ AI가 피드백을 반영하여 매니페스트를 수정합니다. test-fronten
 - **문제**: `data/`, `models/` 패턴이 `backend/internal/data/`, `backend/pkg/models/`까지 매칭하여 핵심 소스 파일이 Git에서 누락
 - **해결**: 루트 한정 패턴(`/data/`, `/models/`)으로 변경
 
+### 6.6 Pod 상태 오표시 (CrashLoopBackOff → Running)
+- **문제**: K8s Pod Phase가 "Running"이면 UI에서 Running으로 표시하지만, 실제 컨테이너는 CrashLoopBackOff 상태
+- **해결**: Pod Phase 대신 ContainerStatuses의 Waiting/Terminated Reason을 우선 확인하여 실제 상태 반영
+
+### 6.7 SecurityContext로 인한 배포 실패
+- **문제**: AI가 생성한 매니페스트의 `runAsNonRoot: true` 설정이 root로 실행되는 이미지(nginx, node, postgres)에서 CreateContainerConfigError 유발
+- **해결**: AI 프롬프트에서 SecurityContext 관련 규칙을 완전히 제거. 필요 시 사용자가 직접 요청하는 방식으로 변경
+
+### 6.8 NodePort 충돌
+- **문제**: AI가 매번 `nodePort: 30080`을 하드코딩하여 멀티 서비스 배포 시 포트 충돌 발생
+- **해결**: AI 프롬프트에 NodePort 번호 미지정 규칙 추가 (K8s 자동 할당)
+
 ---
 
 ## 7. Git 커밋 이력
@@ -403,6 +418,8 @@ AI가 피드백을 반영하여 매니페스트를 수정합니다. test-fronten
 | 5 | `36f9002` | `feat(api,ui): real K8s deploy, deploy history redesign, and bug fixes` | 실 K8s 배포, 히스토리 리디자인, 설정 페이지 |
 | 6 | `6cf84c1` | `feat(ai,api,ui): improve AI reliability, add deploy prompt, fix delete history bug` | AI 신뢰성 개선, 프롬프트 기능, 버그 수정 |
 | 7 | `a0c43da` | `docs: sync all documentation and configs with current implementation` | 7개 문서/설정 현행화 |
+| 8-11 | `a3e95d2`~ | `fix/docs: timeout, screenshots, table rendering` | API 타임아웃 증가, 시나리오 스크린샷 16장, 문서 렌더링 수정 |
+| 12 | `fdab87f` | `feat: release Vineyard v1.0.0` | 프로젝트 리브랜딩, 자동 오류 복구, Pod 상태 모니터링, AI 진단, UI 개선, 버전 관리 |
 
 ---
 
@@ -465,25 +482,29 @@ AI_Project/
 
 ## 9. 실행 방법
 
-### 9.1 Docker Compose (전체 시스템)
+### 9.1 Docker Compose (권장)
 ```bash
-cp configs/config.example.yaml configs/config.yaml  # 설정 파일 생성
-# config.yaml에서 AI API 키 설정
-docker-compose up -d
+cp configs/config.example.yaml configs/config.yaml
+./build.sh                # macOS/Linux
+docker compose up -d
 # Frontend: http://localhost:3000, Backend: http://localhost:8080
 ```
 
 ### 9.2 로컬 개발
 ```bash
-# Backend
-cd backend
-export GEMINI_API_KEY=your-key
-go run cmd/server/main.go
+cp configs/config.example.yaml configs/config.yaml
 
-# Frontend (별도 터미널)
-cd frontend
-npm install && npm run dev
-# http://localhost:5173
+# 의존성 설치
+cd backend && go mod download && cd ..
+cd frontend && npm install && cd ..
+
+# 실행 (macOS/Linux)
+./run.sh
+
+# 실행 (Windows — Git Bash 또는 WSL2)
+./run_win.sh
+
+# Frontend: http://localhost:5173, Backend: http://localhost:8888
 ```
 
 ---
@@ -491,12 +512,15 @@ npm install && npm run dev
 ## 10. 결론
 
 ### 10.1 달성 성과
-- **42 REST + 5 WebSocket API** 완전 구현 (약 14,900 LOC)
+- **44 REST + 5 WebSocket API** 완전 구현 (약 15,800 LOC)
 - **3개 AI 프로바이더** (OpenAI, Claude, Gemini) 런타임 전환 지원
 - **단일 + 스택 배포** 전체 라이프사이클 구현 (생성 → 리뷰 → 배포 → 언디플로이 → 재배포 → 삭제)
 - **Few-shot Learning** 기반 점진적 품질 향상 (배포 이력 축적 → 유사 사례 검색 → 프롬프트 강화)
 - **장애 내성**: 3회 재시도 + 지수 백오프, 4단계 JSON 파싱 복구, 템플릿 fallback
+- **자동 오류 복구**: 배포 실패 시 자동 undeploy → 에러 로그 수집 → AI 매니페스트 수정 → 재배포 대기 (최대 2회)
+- **AI 진단**: 비정상 Pod 감지 → 로그/이벤트 수집 → AI 자동 매니페스트 수정 (비동기)
 - **실시간 모니터링**: WebSocket 기반 CPU/메모리/네트워크 메트릭 차트, 로그 스트리밍
+- **버전 관리**: GitHub Releases API 기반 자동 업데이트 알림
 
 ### 10.2 향후 개선 방향
 - 프로덕션 배포를 위한 인증/인가 시스템 추가
