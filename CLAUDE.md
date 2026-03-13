@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트 개요
 
-Hybrid Cloud Dashboard — AI 기반 하이브리드 환경 통합 모니터링 및 지능형 배포 시스템. 로컬 Docker 환경과 여러 Kubernetes 클러스터(AWS EKS, Azure AKS, On-premise)를 단일 대시보드에서 통합 모니터링하고, LLM 기반으로 Docker 컨테이너를 K8s에 지능적으로 배포한다.
+Vineyard — AI 기반 하이브리드 환경 통합 모니터링 및 지능형 배포 시스템. 로컬 Docker 환경과 여러 Kubernetes 클러스터(AWS EKS, Azure AKS, On-premise)를 단일 대시보드에서 통합 모니터링하고, LLM 기반으로 Docker 컨테이너를 K8s에 지능적으로 배포한다.
 
 **현재 상태:** 백엔드(Go)와 프론트엔드(React) 핵심 기능 구현 완료. Docker/K8s 모니터링, AI 매니페스트 생성(단일+스택), 배포 라이프사이클(배포/언디플로이/리디플로이/삭제), 통합 배포 히스토리, 설정 관리, 실시간 WebSocket 스트리밍이 동작하는 상태.
 
@@ -110,7 +110,7 @@ Go 모듈: `github.com/seyunpark/hybrid_cloud_dashboard`
 
 Vite 프록시: 개발 시 `/api` → `http://localhost:8080`, `/ws` → `ws://localhost:8080`
 
-### API 엔드포인트 구조 (42 REST + 5 WebSocket)
+### API 엔드포인트 구조 (44 REST + 5 WebSocket)
 
 **Docker** (5):
 - `GET /api/docker/containers` — 컨테이너 목록
@@ -139,10 +139,11 @@ Vite 프록시: 개발 시 `/api` → `http://localhost:8080`, `/ws` → `ws://l
 - `GET /api/deploy/history` — 배포 이력
 - `GET /api/deploy/unified-history` — 통합 배포 이력 (페이지네이션)
 
-**스택 배포** (11):
+**스택 배포** (13):
 - `GET /api/deploy/stack/` — 활성 스택 배포 목록
 - `GET /api/deploy/stack/:deploy_id` — 스택 배포 상세
 - `GET /api/deploy/stack/:deploy_id/status` — 스택 배포 상태
+- `GET /api/deploy/stack/:deploy_id/pod-status` — 스택 Pod 실시간 상태
 - `POST /api/deploy/stack/` — 스택 배포 생성 (AI 매니페스트 생성)
 - `POST /api/deploy/stack/:deploy_id/refine` — 피드백 기반 수정
 - `POST /api/deploy/stack/:deploy_id/regenerate` — 매니페스트 재생성
@@ -150,6 +151,7 @@ Vite 프록시: 개발 시 `/api` → `http://localhost:8080`, `/ws` → `ws://l
 - `POST /api/deploy/stack/:deploy_id/execute` — 스택 배포 실행
 - `POST /api/deploy/stack/:deploy_id/undeploy` — 스택 언디플로이
 - `POST /api/deploy/stack/:deploy_id/redeploy` — 스택 재배포
+- `POST /api/deploy/stack/:deploy_id/diagnose` — AI 진단 및 자동 수정
 - `DELETE /api/deploy/stack/:deploy_id` — 스택 배포 삭제 (soft-delete)
 
 **설정** (7):

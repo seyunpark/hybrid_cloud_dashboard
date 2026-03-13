@@ -13,8 +13,7 @@ ai:
   # LLM Provider: openai, claude, azure-openai, gemini
   provider: gemini
 
-  # API Key (환경변수 사용 권장: ${OPENAI_API_KEY}, ${CLAUDE_API_KEY}, ${GEMINI_API_KEY})
-  api_key: your-api-key-here
+  api_key: ""
 
   # 모델
   # OpenAI: gpt-4-turbo-preview, gpt-4, gpt-3.5-turbo

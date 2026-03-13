@@ -186,7 +186,7 @@ SQLite 데이터베이스 등 런타임 데이터가 저장됩니다. Git에서 
 ```bash
 mkdir -p backend/{cmd/server,internal/{api,docker,kubernetes,ai,registry,data,config,metrics},pkg/{models,utils}}
 cd backend
-go mod init github.com/your-org/hybrid-dashboard
+go mod init github.com/your-org/vineyard
 ```
 
 ### 2. 프론트엔드 시작

@@ -4,7 +4,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: hybrid-dashboard-backend
+    container_name: vineyard-backend
     ports:
       - "8080:8080"
     volumes:
@@ -15,7 +15,7 @@ services:
       # kubeconfig (Kubernetes 클러스터 접근)
       - ~/.kube:/root/.kube:ro
       # 데이터베이스
-      - dashboard-data:/app/data
+      - vineyard-data:/app/data
     environment:
       - CONFIG_PATH=/app/configs/config.yaml
       - ENV=production
@@ -26,7 +26,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     restart: unless-stopped
     networks:
-      - dashboard-network
+      - vineyard-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -39,7 +39,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: hybrid-dashboard-frontend
+    container_name: vineyard-frontend
     ports:
       - "3000:80"
     depends_on:
@@ -47,12 +47,12 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - dashboard-network
+      - vineyard-network
 
 networks:
-  dashboard-network:
+  vineyard-network:
     driver: bridge
 
 volumes:
-  dashboard-data:
+  vineyard-data:
     driver: local

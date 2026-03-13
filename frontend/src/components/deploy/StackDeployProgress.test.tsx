@@ -38,9 +38,9 @@ describe('StackDeployProgress', () => {
     },
   };
 
-  it('renders stack name', () => {
+  it('renders progress label', () => {
     render(<StackDeployProgress status={baseStatus} />);
-    expect(screen.getByText(/my-stack/)).toBeInTheDocument();
+    expect(screen.getByText(/배포 진행률/)).toBeInTheDocument();
   });
 
   it('renders all services in deploy order', () => {
@@ -112,10 +112,23 @@ describe('StackDeployProgress', () => {
     expect(checkmarks.length).toBe(2);
   });
 
-  it('renders step messages when present', () => {
-    render(<StackDeployProgress status={baseStatus} />);
-    expect(screen.getByText(/Deployment created/)).toBeInTheDocument();
-    expect(screen.getByText(/Creating\.\.\./)).toBeInTheDocument();
+  it('renders failed step messages only', () => {
+    const failed: StackDeployStatus = {
+      ...baseStatus,
+      services: {
+        ...baseStatus.services,
+        backend: {
+          service_name: 'backend',
+          status: 'failed',
+          steps: [
+            { step: 'create_deployment', status: 'failed', message: 'Timeout error' },
+            { step: 'create_service', status: 'pending' },
+          ],
+        },
+      },
+    };
+    render(<StackDeployProgress status={failed} />);
+    expect(screen.getByText(/Timeout error/)).toBeInTheDocument();
   });
 
   it('renders failed step icon', () => {
